@@ -8,27 +8,43 @@ set -x
 RPMDIR=$(readlink -f "$1")
 FAIL=0
 
+findrpm() {
+    local pat=$1
+    local f
+    f=$(find "$RPMDIR" -name "$pat" ! -name '*.src.rpm' | head -1)
+    if [ -z "$f" ]; then
+        echo "MISSING rpm matching $pat in $RPMDIR" >&2
+        find "$RPMDIR" -name '*.rpm' >&2
+        return 1
+    fi
+    echo "$f"
+}
+
+CLIENT=$(findrpm 'confluent_client-*.noarch.rpm') || FAIL=1
+VTBUFFERD=$(findrpm 'confluent_vtbufferd-*.rpm') || FAIL=1
+IMGUTIL=$(findrpm 'confluent_imgutil-*.noarch.rpm') || FAIL=1
+SERVER=$(findrpm 'confluent_server-*.noarch.rpm') || FAIL=1
+OSDEPLOY=$(findrpm 'confluent_osdeploy-x86_64-*.noarch.rpm') || FAIL=1
+[ "$FAIL" = 1 ] && exit 1
+
 dnf -y install epel-release
 dnf config-manager --set-enabled crb || true
 
 echo "::group::install client, vtbufferd, imgutil via dnf"
-dnf -y install "$RPMDIR"/*/confluent_client-*.noarch.rpm \
-               "$RPMDIR"/*/confluent_vtbufferd-*.rpm \
-               "$RPMDIR"/*/confluent_imgutil-*.noarch.rpm || FAIL=1
+dnf -y install "$CLIENT" "$VTBUFFERD" "$IMGUTIL" || FAIL=1
 echo "::endgroup::"
 
 echo "::group::install server (dnf, fall back to --nodeps for known-missing deps)"
-SERVERRPM=$(ls "$RPMDIR"/*/confluent_server-*.noarch.rpm | head -1)
-if ! dnf -y install "$SERVERRPM"; then
+if ! dnf -y install "$SERVER"; then
     # expected: python3-webauthn (and python3-eficompressor on el9) are not in EPEL
-    rpm -qpR "$SERVERRPM" | grep -vE '^(confluent|rpmlib|/)' | sed 's/ [<>=].*//' | sort -u > /tmp/reqs
+    rpm -qpR "$SERVER" | grep -vE '^(confluent|rpmlib|/)' | sed 's/ [<>=].*//' | sort -u > /tmp/reqs
     xargs -a /tmp/reqs dnf -y install --skip-broken
-    rpm -ivh --nodeps "$SERVERRPM" || FAIL=1
+    rpm -ivh --nodeps "$SERVER" || FAIL=1
 fi
 echo "::endgroup::"
 
 echo "::group::install osdeploy (--nodeps: requires Lenovo confluent_ipxe)"
-rpm -ivh --nodeps "$RPMDIR"/*/confluent_osdeploy-x86_64-*.noarch.rpm || FAIL=1
+rpm -ivh --nodeps "$OSDEPLOY" || FAIL=1
 test -d /opt/confluent/lib/osdeploy/el10/profiles || FAIL=1
 echo "::endgroup::"
 

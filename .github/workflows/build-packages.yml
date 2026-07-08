@@ -30,10 +30,10 @@ jobs:
           dnf -y install dnf-plugins-core
           dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
           dnf -y install gcc make binutils libcurl-devel fuse-devel libxcrypt-devel
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build utils
         run: make -C confluent_osdeploy/utils
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: utilsbin-${{ matrix.tag }}
           path: |
@@ -59,8 +59,10 @@ jobs:
           - { dist: el10, arch: aarch64, image: "almalinux:10", runner: ubuntu-24.04-arm, noarch: false }
     steps:
       - name: Install build dependencies
-        run: dnf -y install rpm-build python3-setuptools python3-devel gcc make git-core tar xz
-      - uses: actions/checkout@v4
+        run: |
+          dnf -y install epel-release
+          dnf -y install rpm-build python3-setuptools python3-devel gcc make git-core tar xz pandoc
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Prepare rpmbuild tree
@@ -78,7 +80,7 @@ jobs:
           ./confluent_client/buildrpm
           ./confluent_server/buildrpm
           ./imgutil/buildrpm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rpms-${{ matrix.dist }}-${{ matrix.arch }}
           path: ~/rpmbuild/RPMS/
@@ -96,7 +98,7 @@ jobs:
     steps:
       - name: Install build dependencies
         run: dnf -y install rpm-build git-core tar xz cpio
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Prepare
@@ -105,17 +107,17 @@ jobs:
           # forks do not include upstream tags, but git describe needs them
           git fetch --tags --force https://github.com/xcat2/confluent.git
           git describe
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: utilsbin-el8-${{ matrix.arch }}
           path: el8utils
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: utilsbin-el9-${{ matrix.arch }}
           path: el9utils
       - name: Build osdeploy rpm
         run: bash .github/scripts/build-osdeploy.sh ${{ matrix.arch }} el8utils el9utils
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rpms-osdeploy-${{ matrix.arch }}
           path: ~/rpmbuild/RPMS/
@@ -136,10 +138,12 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get -y install \
             git build-essential debhelper devscripts dh-python fakeroot \
-            python3-all python3-setuptools python3-stdeb xz-utils
-      - uses: actions/checkout@v4
+            python3-all python3-setuptools python3-stdeb xz-utils pandoc patch
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Patch stdeb for python 3.12 (upstream build/arm/noble/stdeb.patch)
+        run: cd / && patch -p1 < "$GITHUB_WORKSPACE/build/arm/noble/stdeb.patch"
       - name: Build debs
         run: |
           git config --global --add safe.directory '*'
@@ -151,7 +155,7 @@ jobs:
           ./confluent_client/builddeb /tmp/debout
           ./confluent_server/builddeb /tmp/debout
           ls -la /tmp/debout
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: debs-${{ matrix.name }}
           path: /tmp/debout/*.deb
@@ -170,12 +174,12 @@ jobs:
           - { dist: el9,  image: "almalinux:9" }
           - { dist: el10, image: "almalinux:10" }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: rpms-${{ matrix.dist }}-x86_64
           path: testrpms/main
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: rpms-osdeploy-x86_64
           path: testrpms/osdeploy
@@ -188,7 +192,7 @@ jobs:
     needs: [rpms, osdeploy, debs, smoketest]
     if: ${{ always() && needs.rpms.result == 'success' && needs.osdeploy.result == 'success' && needs.smoketest.result == 'success' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Determine version
@@ -197,11 +201,11 @@ jobs:
           # forks do not include upstream tags, but git describe needs them
           git fetch --tags --force https://github.com/xcat2/confluent.git
           echo "version=$(git describe --tags)" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: rpms-*
           path: art
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: debs-*
@@ -269,23 +273,23 @@ jobs:
             echo
             echo "See INSTALL.txt inside each bundle for install steps and known dependency gaps."
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: confluent-${{ steps.ver.outputs.version }}-el9-x86_64
           path: bundle/confluent-${{ steps.ver.outputs.version }}-el9-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: confluent-${{ steps.ver.outputs.version }}-el9-aarch64
           path: bundle/confluent-${{ steps.ver.outputs.version }}-el9-aarch64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: confluent-${{ steps.ver.outputs.version }}-el10-x86_64
           path: bundle/confluent-${{ steps.ver.outputs.version }}-el10-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: confluent-${{ steps.ver.outputs.version }}-el10-aarch64
           path: bundle/confluent-${{ steps.ver.outputs.version }}-el10-aarch64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
           name: confluent-${{ steps.ver.outputs.version }}-debs-noble
