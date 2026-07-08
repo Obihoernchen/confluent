@@ -17,6 +17,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { tag: el8-x86_64,  image: "almalinux:8", runner: ubuntu-24.04 }
@@ -49,6 +50,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { dist: el9,  arch: x86_64,  image: "almalinux:9",  runner: ubuntu-24.04,     noarch: true }
@@ -64,6 +66,9 @@ jobs:
       - name: Prepare rpmbuild tree
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # forks do not include upstream tags, but git describe needs them
+          git fetch --tags --force https://github.com/xcat2/confluent.git
+          git describe
           mkdir -p ~/rpmbuild/SOURCES ~/rpmbuild/SPECS
       - name: Build vtbufferd (arch-specific)
         run: ./confluent_vtbufferd/buildrpm
@@ -85,6 +90,7 @@ jobs:
     container: almalinux:9
     needs: utils
     strategy:
+      fail-fast: false
       matrix:
         arch: [x86_64, aarch64]
     steps:
@@ -94,7 +100,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Prepare
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # forks do not include upstream tags, but git describe needs them
+          git fetch --tags --force https://github.com/xcat2/confluent.git
+          git describe
       - uses: actions/download-artifact@v4
         with:
           name: utilsbin-el8-${{ matrix.arch }}
@@ -133,6 +143,9 @@ jobs:
       - name: Build debs
         run: |
           git config --global --add safe.directory '*'
+          # forks do not include upstream tags, but git describe needs them
+          git fetch --tags --force https://github.com/xcat2/confluent.git
+          git describe
           mkdir -p /tmp/debout
           ./confluent_vtbufferd/builddeb /tmp/debout
           ./confluent_client/builddeb /tmp/debout
@@ -151,6 +164,7 @@ jobs:
     container: ${{ matrix.image }}
     needs: [rpms, osdeploy]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { dist: el9,  image: "almalinux:9" }
@@ -179,7 +193,10 @@ jobs:
           fetch-depth: 0
       - name: Determine version
         id: ver
-        run: echo "version=$(git describe --tags)" >> "$GITHUB_OUTPUT"
+        run: |
+          # forks do not include upstream tags, but git describe needs them
+          git fetch --tags --force https://github.com/xcat2/confluent.git
+          echo "version=$(git describe --tags)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           pattern: rpms-*
