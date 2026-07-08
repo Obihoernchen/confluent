@@ -5,7 +5,7 @@ name: Build test packages
 
 on:
   push:
-    branches: [master]
+    branches: [ci-packages]
   workflow_dispatch:
 
 permissions:
