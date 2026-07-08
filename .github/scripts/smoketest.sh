@@ -29,6 +29,7 @@ OSDEPLOY=$(findrpm 'confluent_osdeploy-x86_64-*.noarch.rpm') || FAIL=1
 
 dnf -y install epel-release
 dnf config-manager --set-enabled crb || true
+dnf -y install procps-ng util-linux
 
 echo "::group::install client, vtbufferd, imgutil via dnf"
 dnf -y install "$CLIENT" "$VTBUFFERD" "$IMGUTIL" || FAIL=1
@@ -53,14 +54,22 @@ export PYTHONPATH=/opt/confluent/lib/python
 python3 -c "import confluent.main; print('IMPORT confluent.main: OK')" || FAIL=1
 python3 -c "import confluent.snmputil; print('IMPORT confluent.snmputil: OK')" || FAIL=1
 python3 -c "import aiohmi.redfish.command; print('IMPORT aiohmi.redfish: OK')" || FAIL=1
-timeout 15 /opt/confluent/bin/confluent 2>&1 | head -5
-sleep 8
-if pgrep -f confluent > /dev/null; then
+# the rpm sets up non-root operation (/etc/confluent owned by confluent), so
+# the daemon must run as the confluent user; the asyncio port only supports
+# foreground mode (-f), so background it ourselves
+mkdir -p /var/run/confluent
+chown confluent:confluent /var/run/confluent
+timeout 30 runuser -u confluent -- /opt/confluent/bin/confluent -f > /tmp/confluentd.log 2>&1 &
+sleep 10
+if pgrep -f '/opt/confluent/bin/confluent' > /dev/null && [ -S /var/run/confluent/api.sock ]; then
     echo "DAEMON_RUNNING=yes"
 else
     echo "DAEMON_RUNNING=no"
+    cat /tmp/confluentd.log || true
+    ls -la /var/run/confluent/ || true
     FAIL=1
 fi
+pkill -f '/opt/confluent/bin/confluent' || true
 echo "::endgroup::"
 
 exit $FAIL
