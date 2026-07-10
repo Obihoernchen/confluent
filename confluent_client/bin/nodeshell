@@ -22,6 +22,7 @@ import select
 import signal
 import subprocess
 import sys
+import time
 
 try:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -35,9 +36,11 @@ if path.startswith('/opt'):
 import confluent.client as client
 import confluent.sortutil as sortutil
 devnull = None
+cmdtimeout = 0
 
 def run():
     global devnull
+    global cmdtimeout
     devnull = open(os.devnull, 'rb')
     argparser = optparse.OptionParser(
         usage="Usage: %prog [options] noderange commandexpression",
@@ -55,6 +58,9 @@ def run():
                          help='Use a different name other than the nodename for ssh')
     argparser.add_option('-t', '--timeout', type='int', default=0,
                          help='Timeout in seconds for each node ssh connection')
+    argparser.add_option('-u', '--cmdtimeout', type='int', default=0,
+                         help='Maximum runtime in seconds for the command on '
+                              'each node, killing ssh when exceeded')
     argparser.add_option('-x', '--noexpression', action='store_true',
                          help='Suppress expression expansion of command')
     argparser.add_option('-m', '--maxnodes', type='int',
@@ -70,6 +76,7 @@ def run():
         sys.exit(1)
     client.check_globbing(args[0])
     concurrentprocs = options.count
+    cmdtimeout = options.cmdtimeout
     c = client.Command()
     cmdstr = " ".join(args[1:])
 
@@ -131,7 +138,8 @@ def run():
             pendingexecs.append((node, cmdv))
     if not all or exitcode:
         sys.exit(exitcode)
-    rdy = poller.poll(10)
+    polltime = 1 if cmdtimeout else 10
+    rdy = poller.poll(polltime)
     while all:
         pernodeout = {}
         for r in rdy:
@@ -160,7 +168,8 @@ def run():
                     pop = desc['popen']
                     ret = pop.poll()
                     if ret is not None:
-                        exitcode = exitcode | ret
+                        if ret > 0:
+                            exitcode = exitcode | ret
                         all.discard(r)
                         poller.unregister(r)
                         r.close()
@@ -168,6 +177,21 @@ def run():
                             node, cmdv = pendingexecs.popleft()
                             run_cmdv(node, cmdv, all, poller, pipedesc)
             singlepoller.close()
+        if cmdtimeout:
+            now = time.time()
+            for desc in list(pipedesc.values()):
+                if desc['type'] != 'stdout' or desc.get('timedout'):
+                    continue
+                if desc['deadline'] < now and desc['popen'].poll() is None:
+                    desc['timedout'] = True
+                    desc['popen'].kill()
+                    exitcode |= 124
+                    if options.nonodeprefix:
+                        sys.stderr.write('command timed out\n')
+                    else:
+                        sys.stderr.write(
+                            '{0}: command timed out\n'.format(desc['node']))
+                    sys.stderr.flush()
         for node in sortutil.natural_sort(pernodeout):
             for line in pernodeout[node]:
                 line = client.stringify(line)
@@ -178,17 +202,20 @@ def run():
                     sys.stdout.write('{0}: {1}'.format(node, line))
         sys.stdout.flush()
         if all:
-            rdy = poller.poll(10)
+            rdy = poller.poll(polltime)
     sys.exit(exitcode)
 
 
 def run_cmdv(node, cmdv, all, poller, pipedesc):
     nopen = subprocess.Popen(
         cmdv, stdin=devnull, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.time() + cmdtimeout if cmdtimeout else None
     pipedesc[nopen.stdout.fileno()] = {'node': node, 'popen': nopen,
-                              'type': 'stdout', 'file': nopen.stdout}
+                              'type': 'stdout', 'file': nopen.stdout,
+                              'deadline': deadline}
     pipedesc[nopen.stderr.fileno()] = {'node': node, 'popen': nopen,
-                              'type': 'stderr', 'file': nopen.stderr}
+                              'type': 'stderr', 'file': nopen.stderr,
+                              'deadline': deadline}
     all.add(nopen.stdout)
     all.add(nopen.stderr)
     poller.register(nopen.stdout, select.EPOLLIN)
