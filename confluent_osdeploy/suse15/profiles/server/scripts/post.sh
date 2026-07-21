@@ -24,6 +24,8 @@ chmod og-rwx /etc/confluent/*
 
 export confluent_mgr confluent_profile nodename
 . /etc/confluent/functions
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 
 # This will induce server side processing of the syncfile contents if
 # present
@@ -37,5 +39,5 @@ run_remote_parts post.d
 # Induce execution of remote configuration, e.g. ansible plays in ansible/post.d/
 run_remote_config post.d
 
-curl -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_mgr/confluent-api/self/updatestatus
+curl -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_whost/confluent-api/self/updatestatus
 

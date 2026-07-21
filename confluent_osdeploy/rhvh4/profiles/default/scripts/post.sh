@@ -8,8 +8,10 @@ chmod og-rwx /etc/confluent/*
 
 export mgr profile nodename
 . /etc/confluent/functions
+confluent_whost=$mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 
-curl -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $apikey" https://$mgr/confluent-api/self/updatestatus
+curl -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $apikey" https://$confluent_whost/confluent-api/self/updatestatus
 
 
 if [ -f /tmp/cryptboot ]; then

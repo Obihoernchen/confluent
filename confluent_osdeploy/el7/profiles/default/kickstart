@@ -53,7 +53,9 @@ tar
 %pre
 confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg |awk '{print $2}')
 confluent_mgr=$(grep ^deploy_server: /etc/confluent/confluent.deploycfg |awk '{print $2}')
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/pre.sh > /tmp/preinst.sh
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/pre.sh > /tmp/preinst.sh
 . /tmp/preinst.sh
 %end
 
@@ -61,13 +63,15 @@ curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/pr
 mkdir -p /mnt/sysimage/etc/confluent
 confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg |awk '{print $2}')
 confluent_mgr=$(grep ^deploy_server: /etc/confluent/confluent.deploycfg |awk '{print $2}')
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/prechroot.sh > /tmp/postinst.sh
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/prechroot.sh > /tmp/postinst.sh
 . /tmp/postinst.sh
 
 # Hook firstboot.sh
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/firstboot.service > /mnt/sysimage/etc/systemd/system/firstboot.service
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/firstboot.service > /mnt/sysimage/etc/systemd/system/firstboot.service
 mkdir -p /mnt/sysimage/opt/confluent/bin
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/firstboot.sh > /mnt/sysimage/opt/confluent/bin/firstboot.sh
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/firstboot.sh > /mnt/sysimage/opt/confluent/bin/firstboot.sh
 chmod +x /mnt/sysimage/opt/confluent/bin/firstboot.sh
 %end
 
@@ -78,6 +82,8 @@ chgrp ssh_keys /etc/ssh/ssh*key
 restorecon /etc/ssh/ssh*key /root/.shosts /etc/ssh/shosts.equiv /etc/ssh/ssh_config.d/* /opt/confluent/bin/firstboot.sh
 confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg |awk '{print $2}')
 confluent_mgr=$(grep ^deploy_server: /etc/confluent/confluent.deploycfg |awk '{print $2}')
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/post.sh > /tmp/postinst.sh
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/post.sh > /tmp/postinst.sh
 . /tmp/postinst.sh
 %end

@@ -7,14 +7,18 @@ for addr in $(grep ^MANAGER: /etc/confluent/confluent.info|awk '{print $2}'|sed 
         confluent_urls="$confluent_urls $confluent_proto://$addr/confluent-public/os/$confluent_profile/rootimg.sfs"
     fi
 done
+confluent_whost=$confluent_mgr
+if [[ "$confluent_whost" == *:* ]] && [[ "$confluent_whost" != "["* ]]; then
+    confluent_whost="[$confluent_mgr]"
+fi
 mkdir -p /mnt/remoteimg /mnt/remote /mnt/overlay
 TETHERED=1
 if grep -q confluent_imagemethod=untethered /proc/cmdline || grep -q confluent_imagemethod=uncompressed /proc/cmdline; then
     TETHERED=0
     mount -t tmpfs untethered /mnt/remoteimg
-    curl https://$confluent_mgr/confluent-public/os/$confluent_profile/rootimg.sfs -o /mnt/remoteimg/rootimg.sfs
+    curl https://$confluent_whost/confluent-public/os/$confluent_profile/rootimg.sfs -o /mnt/remoteimg/rootimg.sfs
 else
-    confluent_urls="$confluent_urls https://$confluent_mgr/confluent-public/os/$confluent_profile/rootimg.sfs"
+    confluent_urls="$confluent_urls https://$confluent_whost/confluent-public/os/$confluent_profile/rootimg.sfs"
     /opt/confluent/bin/urlmount $confluent_urls /mnt/remoteimg
 fi
 /opt/confluent/bin/confluent_imginfo /mnt/remoteimg/rootimg.sfs > /tmp/rootimg.info
@@ -23,7 +27,7 @@ export mountsrc=$loopdev
 losetup -r $loopdev /mnt/remoteimg/rootimg.sfs
 confluent_nodename=$(grep ^NODENAME: /etc/confluent/confluent.info |awk '{print $2}')
 if grep '^Format: confluent_crypted' /tmp/rootimg.info > /dev/null; then
-    while ! curl -sf -H "CONFLUENT_NODENAME: $confluent_nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" https://$confluent_mgr/confluent-api/self/profileprivate/pending/rootimg.key > /tmp/rootimg.key; do
+    while ! curl -sf -H "CONFLUENT_NODENAME: $confluent_nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" https://$confluent_whost/confluent-api/self/profileprivate/pending/rootimg.key > /tmp/rootimg.key; do
         echo "Unable to retrieve private key from $confluent_mgr (verify that confluent can access /var/lib/confluent/private/os/$confluent_profile/pending/rootimg.key)"
         sleep 1
     done
@@ -147,16 +151,16 @@ echo 'Host *' >> $sshconf
 echo '    HostbasedAuthentication yes' >> $sshconf
 echo '    EnableSSHKeysign yes' >> $sshconf
 echo '    HostbasedKeyTypes *ed25519*' >> $sshconf
-curl -sf -H "CONFLUENT_NODENAME: $confluent_nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" https://$confluent_mgr/confluent-api/self/nodelist > /sysroot/etc/ssh/shosts.equiv
+curl -sf -H "CONFLUENT_NODENAME: $confluent_nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" https://$confluent_whost/confluent-api/self/nodelist > /sysroot/etc/ssh/shosts.equiv
 cp /sysroot/etc/ssh/shosts.equiv /sysroot/root/.shosts
 echo $confluent_nodename > /sysroot/etc/hostname
 chmod 600 /sysroot/etc/ssh/*_key
 mkdir -p /sysroot/usr/share/ca-certificates/confluent/
 cp /tls/*.pem /sysroot/usr/share/ca-certificates/confluent/
 chroot /sysroot/ update-ca-certificates
-curl -sf https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/onboot.service > /sysroot/etc/systemd/system/onboot.service
+curl -sf https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/onboot.service > /sysroot/etc/systemd/system/onboot.service
 mkdir -p /sysroot/opt/confluent/bin
-curl -sf https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/onboot.sh > /sysroot/opt/confluent/bin/onboot.sh
+curl -sf https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/onboot.sh > /sysroot/opt/confluent/bin/onboot.sh
 chmod +x /sysroot/opt/confluent/bin/onboot.sh
 cp /opt/confluent/bin/apiclient /sysroot/opt/confluent/bin
 ln -s /etc/systemd/system/onboot.service /sysroot/etc/systemd/system/multi-user.target.wants/onboot.service

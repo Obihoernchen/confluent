@@ -23,9 +23,11 @@ touch /etc/cloud/cloud-init.disabled
 source /etc/confluent/functions
 confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg|awk '{print $2}')
 export confluent_mgr confluent_profile
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 run_remote_python confignet
 run_remote_parts firstboot.d
 run_remote_config firstboot.d
-curl --capath /etc/confluent/tls -f -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" -X POST -d "status: complete" https://$confluent_mgr/confluent-api/self/updatestatus
+curl --capath /etc/confluent/tls -f -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" -X POST -d "status: complete" https://$confluent_whost/confluent-api/self/updatestatus
 ) &
 tail --pid $! -n 0 -F /var/log/confluent/confluent-post.log > /dev/console

@@ -42,7 +42,9 @@ if [ "$rootpw" = null ]; then
 else
     echo "rootpw --iscrypted $rootpw" > /tmp/rootpw
 fi
-curl -f https://$mgr/confluent-public/os/$profile/profile.yaml > /tmp/instprofile.yaml
+confluent_whost=$mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+curl -f https://$confluent_whost/confluent-public/os/$profile/profile.yaml > /tmp/instprofile.yaml
 blargs=$(grep ^installedargs: /tmp/instprofile.yaml | sed -e 's/#.*//' -e 's/^installedargs: //')
 if [ ! -z "$blargs" ]; then
 	blargs=' --append="'$blargs'"'
@@ -59,7 +61,7 @@ fi
 ssh-keygen -A
 for pubkey in /etc/ssh/ssh_host_*_key.pub; do
     certfile=${pubkey/.pub/-cert.pub}
-    curl -f -X POST -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" -d @$pubkey https://$mgr/confluent-api/self/sshcert > $certfile
+    curl -f -X POST -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" -d @$pubkey https://$confluent_whost/confluent-api/self/sshcert > $certfile
     echo HostCertificate $certfile >> /etc/ssh/sshd_config.anaconda
 done
 cp /etc/ssh/sshd_config.anaconda /etc/ssh/sshd_config
@@ -78,7 +80,7 @@ fi
 
 
 export mgr profile nodename
-curl -f https://$mgr/confluent-public/os/$profile/scripts/functions > /tmp/functions
+curl -f https://$confluent_whost/confluent-public/os/$profile/scripts/functions > /tmp/functions
 . /tmp/functions
 run_remote_python getinstalldisk
 if [ -e /tmp/installdisk ]; then

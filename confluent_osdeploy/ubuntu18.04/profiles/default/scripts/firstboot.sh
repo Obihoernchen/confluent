@@ -15,8 +15,10 @@ while ! ping -c 1 $confluent_mgr >& /dev/null; do
 	sleep 1
 done
 source /etc/confluent/functions
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 
 run_remote_parts firstboot.d
 run_remote_config firstboot.d
 systemctl disable firstboot
-curl -f -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" -X POST -d "status: complete" https://$confluent_mgr/confluent-api/self/updatestatus
+curl -f -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" -X POST -d "status: complete" https://$confluent_whost/confluent-api/self/updatestatus

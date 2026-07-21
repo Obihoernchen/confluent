@@ -13,6 +13,8 @@ confluent_mgr=$(grep ^deploy_server: /etc/confluent/confluent.deploycfg|awk '{pr
 confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg|awk '{print $2}')
 export nodename confluent_mgr confluent_profile
 . /etc/confluent/functions
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 (
 exec >> /var/log/confluent/confluent-firstboot.log
 exec 2>> /var/log/confluent/confluent-firstboot.log
@@ -34,7 +36,7 @@ if [ ! -f /etc/confluent/firstboot.ran ]; then
     run_remote_config firstboot.d
 fi
 
-curl -X POST -d 'status: complete' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_mgr/confluent-api/self/updatestatus
+curl -X POST -d 'status: complete' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_whost/confluent-api/self/updatestatus
 systemctl disable firstboot
 rm /etc/systemd/system/firstboot.service
 rm /etc/confluent/firstboot.ran

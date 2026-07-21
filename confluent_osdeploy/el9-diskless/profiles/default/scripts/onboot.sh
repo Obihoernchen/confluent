@@ -65,5 +65,7 @@ if [ -f /run/confluent/onboot_sleep.pid ]; then
     rm -f /run/confluent/onboot_sleep.pid
 fi
 
-printf 'state: booted\nstatus: booted' | curl -X POST --data-binary @- -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_mgr/confluent-api/self/updatestatus
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+printf 'state: booted\nstatus: booted' | curl -X POST --data-binary @- -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_whost/confluent-api/self/updatestatus
 kill $logshowpid

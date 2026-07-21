@@ -41,15 +41,17 @@ if [ -e /dev/disk/by-label/CNFLNT_IDNT ]; then
     ln -s /opt/confluent/bin/clortho /opt/confluent/bin/genpasshmac
     /opt/confluent/bin/genpasshmac $passfile $passcrypt $hmacfile $hmackeyfile
     for deployer in $deploysrvs; do
-        if curl -f -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_CRYPTHMAC: $(cat $hmacfile)" -d@$passcrypt -k https://$deployer/confluent-api/self/registerapikey; then
+        deployerhost=$deployer
+        case "$deployerhost" in \[*\]) ;; *:*) deployerhost="[$deployerhost]" ;; esac
+        if curl -f -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_CRYPTHMAC: $(cat $hmacfile)" -d@$passcrypt -k https://$deployerhost/confluent-api/self/registerapikey; then
             cp $passfile /etc/confluent/confluent.apikey
             confluent_apikey=$(cat /etc/confluent/confluent.apikey)
-            curl -sf -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$deployer/confluent-api/self/deploycfg > /etc/confluent/confluent.deploycfg
-            curl -sf -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$deployer/confluent-api/self/profileprivate/pending/config.ign > /config.ign
+            curl -sf -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$deployerhost/confluent-api/self/deploycfg > /etc/confluent/confluent.deploycfg
+            curl -sf -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$deployerhost/confluent-api/self/profileprivate/pending/config.ign > /config.ign
             [ -s /config.ign ] || rm /config.ign
             confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg)
             confluent_profile=${confluent_profile#profile: }
-            curl -sf https://$deployer/confluent-public/os/$confluent_profile/rootfs.img | rdcore stream-hash /etc/coreos-live-want-rootfs | bsdtar -xf - -C /
+            curl -sf https://$deployerhost/confluent-public/os/$confluent_profile/rootfs.img | rdcore stream-hash /etc/coreos-live-want-rootfs | bsdtar -xf - -C /
             exit 0
         fi
     done

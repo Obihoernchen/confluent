@@ -20,13 +20,15 @@ echo '    EnableSSHKeysign yes' >> $sshconf
 echo '    HostbasedKeyTypes *ed25519*' >> $sshconf
 cp /etc/confluent/functions /target/etc/confluent/functions
 source /etc/confluent/functions
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 mkdir -p /target/var/log/confluent
 cp /var/log/confluent/* /target/var/log/confluent/
 (
 exec >> /target/var/log/confluent/confluent-post.log
 exec 2>> /target/var/log/confluent/confluent-post.log
 chmod 600 /target/var/log/confluent/confluent-post.log
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/firstboot.sh > /target/etc/confluent/firstboot.sh
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/firstboot.sh > /target/etc/confluent/firstboot.sh
 chmod +x /target/etc/confluent/firstboot.sh
 cp /tmp/allnodes /target/root/.shosts
 cp /tmp/allnodes /target/etc/ssh/shosts.equiv
@@ -46,7 +48,7 @@ if [ "$textcons" = "true" ] && ! grep console= /proc/cmdline > /dev/null; then
         updategrub=1
     fi
 fi
-kargs=$(curl https://$confluent_mgr/confluent-public/os/$confluent_profile/profile.yaml | grep ^installedargs: | sed -e 's/#.*//')
+kargs=$(curl https://$confluent_whost/confluent-public/os/$confluent_profile/profile.yaml | grep ^installedargs: | sed -e 's/#.*//')
 if [ ! -z "$kargs" ]; then
     sed -i 's/GRUB_CMDLINE_LINUX="\([^"]*\)"/GRUB_CMDLINE_LINUX="\1 '"${kargs}"'"/' /target/etc/default/grub
 fi

@@ -229,7 +229,9 @@ export confluent_profile
 . /etc/confluent/functions
 set_confluent_vars
 export confluent_mgr
-echo "Running https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/onboot.sh"
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+echo "Running https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/onboot.sh"
 run_remote onboot.sh
 while :; do
     bash

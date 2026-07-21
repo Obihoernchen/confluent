@@ -63,7 +63,9 @@ if [ -e /dev/disk/by-label/CNFLNT_IDNT ]; then
                     ip route add default via $v4gw
                 fi
                 for dsrv in $deploysrvs; do
-                    if wget https://$dsrv/confluent-public/ --tries=1 --timeout=1 -O /dev/null > /dev/null 2>&1; then
+                    dsrvhost=$dsrv
+                    case "$dsrvhost" in \[*\]) ;; *:*) dsrvhost="[$dsrvhost]" ;; esac
+                    if wget https://$dsrvhost/confluent-public/ --tries=1 --timeout=1 -O /dev/null > /dev/null 2>&1; then
                         deploysrvs=$dsrv
                         NIC=$NICGUESS
                         setdebopt netcfg/choose_interface $NIC select
@@ -85,12 +87,16 @@ if [ -e /dev/disk/by-label/CNFLNT_IDNT ]; then
             udhcpc $NICGUESS
         done
         for dsrv in $deploysrvs; do
-            if wget https://$dsrv/confluent-public/ --tries=1 --timeout=1 -O /dev/null > /dev/null 2>&1; then
+            dsrvhost=$dsrv
+            case "$dsrvhost" in \[*\]) ;; *:*) dsrvhost="[$dsrvhost]" ;; esac
+            if wget https://$dsrvhost/confluent-public/ --tries=1 --timeout=1 -O /dev/null > /dev/null 2>&1; then
                 deploysrvs=$dsrv
             fi
         done
     fi
     mgr=$deploysrvs
+    confluent_whost=$mgr
+    case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
     ln -s /opt/confluent/bin/clortho /opt/confluent/bin/genpasshmac
     hmackeyfile=/tmp/cnflnthmackeytmp
     passfile=/tmp/cnflnttmppassfile
@@ -98,7 +104,7 @@ if [ -e /dev/disk/by-label/CNFLNT_IDNT ]; then
     hmacfile=/tmp/cnflnthmacfile
     echo -n $(grep ^apitoken: cnflnt.yml|cut -d ' ' -f 2) > $hmackeyfile
     /opt/confluent/bin/genpasshmac $passfile $passcrypt $hmacfile $hmackeyfile
-    wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_CRYPTHMAC: $(cat $hmacfile)" --post-file=$passcrypt https://$mgr/confluent-api/self/registerapikey -O - --quiet
+    wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_CRYPTHMAC: $(cat $hmacfile)" --post-file=$passcrypt https://$confluent_whost/confluent-api/self/registerapikey -O - --quiet
     cp $passfile /etc/confluent/confluent.apikey
     nic=$NIC
 else
@@ -120,12 +126,14 @@ else
         ip -4 flush dev $nic
     done
     mgr=$(grep ^MANAGER:.*\\. /etc/confluent/confluent.info|head -n 1|cut -d: -f 2|sed -e 's/ //')
+    confluent_whost=$mgr
+    case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
     nodename=$(grep ^NODENAME: /etc/confluent/confluent.info|head -n 1|cut -d: -f 2|sed -e 's/ //')
     /opt/confluent/bin/clortho $nodename $mgr > /etc/confluent/confluent.apikey
 fi
 apikey=$(cat /etc/confluent/confluent.apikey)
 cd /etc/confluent
-wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_APIKEY: $apikey" https://$mgr/confluent-api/self/deploycfg
+wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_APIKEY: $apikey" https://$confluent_whost/confluent-api/self/deploycfg
 cd -
 predir=$(mktemp -d)
 cd $predir
@@ -157,13 +165,13 @@ fi
 
 
 
-wget https://$mgr/confluent-public/os/$profile/scripts/pre.sh
+wget https://$confluent_whost/confluent-public/os/$profile/scripts/pre.sh
 chmod u+x pre.sh
-wget https://$mgr/confluent-public/os/$profile/scripts/prechroot.sh
+wget https://$confluent_whost/confluent-public/os/$profile/scripts/prechroot.sh
 chmod u+x prechroot.sh
-wget https://$mgr/confluent-public/os/$profile/scripts/post.sh
+wget https://$confluent_whost/confluent-public/os/$profile/scripts/post.sh
 chmod u+x post.sh
-wget https://$mgr/confluent-public/os/$profile/preseed.cfg
+wget https://$confluent_whost/confluent-public/os/$profile/preseed.cfg
 cat preseed.cfg >> /preseed.cfg
 echo $mgr > /etc/confluent/deployer
 setdebopt auto-install/enable true boolean
@@ -176,11 +184,11 @@ setdebopt netcfg/choose_interface $nic select
 setdebopt netcfg/get_hostname $nodename string
 setdebopt mirror/protocol https string
 setdebopt mirror/country manual string
-setdebopt mirror/https/hostname $mgr string
+setdebopt mirror/https/hostname $confluent_whost string
 setdebopt mirror/https/directory /confluent-public/os/$profile/distribution string
 setdebopt mirror/protocol https string
 setdebopt mirror/https/proxy "" string
-setdebopt apt-setup/security_host $mgr string
+setdebopt apt-setup/security_host $confluent_whost string
 if [ ! -e /dev/disk/by-label/CNFLNT_IDNT ]; then
     v4cfgmeth=$(grep ipv4_method: /etc/confluent/deploycfg |cut -d: -f 2|sed -e 's/ //')
     if [ "$v4cfgmeth" = "static" ]; then

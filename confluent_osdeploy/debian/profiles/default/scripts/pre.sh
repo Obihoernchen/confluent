@@ -5,6 +5,8 @@
 #d-i debian-installer/add-kernel-opts string [from profile.yaml]
 deploycfg=/etc/confluent/confluent.deploycfg
 mgr=$(cat /etc/confluent/deployer)
+confluent_whost=$mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 
 cryptboot=$(grep encryptboot: $deploycfg|sed -e 's/^encryptboot: //')
 if [ "$cryptboot" != "" ]  && [ "$cryptboot" != "none" ] && [ "$cryptboot" != "null" ]; then
@@ -27,7 +29,7 @@ ssh-keygen -A
 for pubkey in /etc/ssh/ssh_host*key.pub; do
     certfile=$(echo $pubkey | sed -e s/.pub/-cert.pub/)
     keyfile=${pubkey%.pub}
-    wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_APIKEY: $apikey" --post-file=$pubkey https://$mgr/confluent-api/self/sshcert -O $certfile --quiet
+    wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_APIKEY: $apikey" --post-file=$pubkey https://$confluent_whost/confluent-api/self/sshcert -O $certfile --quiet
     echo HostKey $keyfile >> /etc/ssh/sshd_config
     echo HostCertificate $certfile >> /etc/ssh/sshd_config
 done
@@ -81,7 +83,7 @@ echo HostbasedUsesNameFromPacketOnly yes >> /etc/ssh/sshd_config
 echo IgnoreRhosts no >> /etc/ssh/sshd_config
 echo sshd:x:1:1::/run/sshd:/bin/false >> /etc/passwd
 /usr/sbin/sshd
-wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_APIKEY: $apikey" https://$mgr/confluent-api/self/nodelist -O /tmp/allnodes --quiet
+wget --header="CONFLUENT_NODENAME: $nodename" --header="CONFLUENT_APIKEY: $apikey" https://$confluent_whost/confluent-api/self/nodelist -O /tmp/allnodes --quiet
 #kill -HUP $(ps | grep -v grep | grep /usr/sbin/sshd | sed -e 's/^ *//'|cut -d ' ' -f 1)
 #curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/getinstalldisk > /tmp/getinstalldisk
 #python3 /tmp/getinstalldisk

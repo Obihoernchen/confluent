@@ -62,7 +62,9 @@ if [ "$rootpw" = null ]; then
 else
     echo "rootpw --iscrypted $rootpw" > /tmp/rootpw
 fi
-curl -sf https://$confluent_mgr/confluent-public/os/$confluent_profile/profile.yaml > /tmp/instprofile.yaml
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
+curl -sf https://$confluent_whost/confluent-public/os/$confluent_profile/profile.yaml > /tmp/instprofile.yaml
 blargs=$(grep ^installedargs: /tmp/instprofile.yaml | sed -e 's/#.*//' -e 's/^installedargs: //')
 if [ ! -z "$blargs" ]; then
 	blargs=' --append="'$blargs'"'
@@ -80,7 +82,7 @@ ssh-keygen -A
 rm /etc/ssh/ssh_host_dsa_key*
 for pubkey in /etc/ssh/ssh_host*key.pub; do
     certfile=${pubkey/.pub/-cert.pub}
-    curl -sf -X POST -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" -d @$pubkey https://$confluent_mgr/confluent-api/self/sshcert > $certfile
+    curl -sf -X POST -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $(cat /etc/confluent/confluent.apikey)" -d @$pubkey https://$confluent_whost/confluent-api/self/sshcert > $certfile
     echo HostCertificate $certfile >> /etc/ssh/sshd_config.anaconda
 done
 /usr/sbin/sshd -f /etc/ssh/sshd_config.anaconda
@@ -103,7 +105,7 @@ fi
 
 
 export confluent_mgr confluent_profile nodename
-curl -sf https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/functions > /tmp/functions
+curl -sf https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/functions > /tmp/functions
 . /tmp/functions
 confluentpython /opt/confluent/bin/apiclient /confluent-public/os/$confluent_profile/kickstart.custom -o /tmp/kickstart.custom
 run_remote pre.custom

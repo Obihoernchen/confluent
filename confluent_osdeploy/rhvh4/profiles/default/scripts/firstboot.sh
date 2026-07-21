@@ -12,6 +12,8 @@ profile=$(grep ^profile: /etc/confluent/confluent.deploycfg|awk '{print $2}')
 cat /etc/confluent/tls/*.pem >> /etc/pki/tls/certs/ca-bundle.crt
 export nodename mgr profile
 . /etc/confluent/functions
+confluent_whost=$mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 while ! ping -c 1 $confluent_mgr >& /dev/null; do
 	sleep 1
 done
@@ -20,6 +22,6 @@ done
 run_remote firstboot.custom
 
 
-curl -X POST -d 'status: complete' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $apikey" https://$mgr/confluent-api/self/updatestatus
+curl -X POST -d 'status: complete' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $apikey" https://$confluent_whost/confluent-api/self/updatestatus
 systemctl disable firstboot
 rm /etc/systemd/system/firstboot.service

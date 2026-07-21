@@ -13,6 +13,8 @@ chmod 700 /etc/confluent
 chmod og-rwx /etc/confluent/*
 export confluent_mgr confluent_profile nodename
 . /etc/confluent/functions
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 
 
 if [ -f /tmp/cryptboot ]; then
@@ -55,5 +57,5 @@ run_remote_config post.d
 cd /root
 fetch_remote confignet
 cd -
-curl -sf -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $apikey" https://$confluent_mgr/confluent-api/self/updatestatus
+curl -sf -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $apikey" https://$confluent_whost/confluent-api/self/updatestatus
 kill $logshowpid

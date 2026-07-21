@@ -12,6 +12,8 @@ confluent_mgr=$(grep ^deploy_server: /etc/confluent/confluent.deploycfg|awk '{pr
 confluent_profile=$(grep ^profile: /etc/confluent/confluent.deploycfg|awk '{print $2}')
 export nodename confluent_mgr confluent_profile
 . /etc/confluent/functions
+confluent_whost=$confluent_mgr
+case "$confluent_whost" in \[*\]) ;; *:*) confluent_whost="[$confluent_whost]" ;; esac
 run_remote setupssh
 mkdir -p /var/log/confluent
 chmod 700 /var/log/confluent
@@ -20,9 +22,9 @@ exec 2>> /var/log/confluent/confluent-post.log
 chmod 600 /var/log/confluent/confluent-post.log
 tail -f /var/log/confluent/confluent-post.log > /dev/console &
 logshowpid=$!
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/firstboot.service > /etc/systemd/system/firstboot.service
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/firstboot.service > /etc/systemd/system/firstboot.service
 mkdir -p /opt/confluent/bin
-curl -f https://$confluent_mgr/confluent-public/os/$confluent_profile/scripts/firstboot.sh > /opt/confluent/bin/firstboot.sh
+curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/scripts/firstboot.sh > /opt/confluent/bin/firstboot.sh
 chmod +x /opt/confluent/bin/firstboot.sh
 systemctl enable firstboot
 selinuxpolicy=$(grep ^SELINUXTYPE /etc/selinux/config |awk -F= '{print $2}')
@@ -39,7 +41,7 @@ run_remote_config post.d
 
 cd /root/
 fetch_remote confignet
-curl -sf -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_mgr/confluent-api/self/updatestatus
+curl -sf -X POST -d 'status: staged' -H "CONFLUENT_NODENAME: $nodename" -H "CONFLUENT_APIKEY: $confluent_apikey" https://$confluent_whost/confluent-api/self/updatestatus
 
 kill $logshowpid
 
