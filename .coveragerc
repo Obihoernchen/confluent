@@ -1,0 +1,23 @@
+# Coverage configuration for confluent.
+#
+# There is deliberately no fail_under. The suite is starting small on purpose,
+# so the goal right now is to establish a baseline that can later be prevented
+# from regressing, not to invent a percentage target.
+
+[run]
+branch = True
+source =
+    confluent_server/confluent
+    confluent_server/aiohmi
+    confluent_client/confluent
+omit =
+    */tests/*
+    */test_*.py
+
+[report]
+show_missing = True
+skip_covered = True
+exclude_also =
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    if __name__ == .__main__.:

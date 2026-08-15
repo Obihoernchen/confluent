@@ -5,3 +5,7 @@ confluent_client/man/man*
 .*.sw*
 .sw*
 .idea/*
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/

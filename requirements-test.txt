@@ -1,0 +1,12 @@
+# Test-only dependencies. See tests/README.md for the runtime dependencies a
+# full run additionally needs, and for the Python version policy.
+#
+# Deliberately unpinned: test code targets Python 3.10+, so there is no reason
+# to hold the tooling back. Only a hypothetical Python 3.9 environment would
+# need pytest<9 and pytest-asyncio<1.3, and that should not constrain the
+# default setup.
+
+pytest
+pytest-asyncio
+pytest-timeout
+pytest-cov
