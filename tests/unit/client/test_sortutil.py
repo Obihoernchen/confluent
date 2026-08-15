@@ -38,10 +38,32 @@ def test_natural_sort_handles_multiple_number_groups():
     assert sortutil.natural_sort(names) == ['r1u2', 'r1u10', 'r2u1', 'r10u1']
 
 
-def test_natural_sort_falls_back_to_ascii_on_mixed_types():
-    """Mixed shapes make the natural key uncomparable; the function is
-    documented to fall back rather than raise."""
+def test_natural_sort_handles_differing_name_shapes():
+    """A numbered and an unnumbered name still sort through the normal path:
+    the keys differ at their first string component."""
     assert sortutil.natural_sort(['n1', 'node']) == ['n1', 'node']
+
+
+def test_naturalize_string_rejects_bytes():
+    """The regex is a str pattern, so a bytes key cannot be built at all. This
+    is what the fallback below exists for."""
+    with pytest.raises(TypeError):
+        sortutil.naturalize_string(b'n1')
+
+
+def test_natural_sort_falls_back_to_ascii_when_no_key_can_be_built():
+    """natural_sort is documented to fall back rather than raise.
+
+    Two str inputs can never trigger it: naturalize_string always yields str
+    at even positions and int at odd ones, so same-position comparisons are
+    always same-type. Bytes do trigger it, per the test above.
+
+    The expected order is the discriminator. ASCII order puts b'n10' first
+    because '1' < '2'; a working natural sort would put b'n2' first. So this
+    fails if the fallback is removed, and also fails if the fallback is
+    somehow bypassed.
+    """
+    assert sortutil.natural_sort([b'n10', b'n2']) == [b'n10', b'n2']
 
 
 def test_natural_sort_does_not_mutate_input():

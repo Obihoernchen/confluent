@@ -83,6 +83,9 @@ All in `conftest.py`.
   before anything imports it.
 - **`_collect_garbage`** (autouse) forces a collection after each test, so unawaited-coroutine warnings are blamed
   on the test that caused them rather than some later one.
+- **`_reset_noderange_cache`** (autouse) clears `noderange.lastnoderange`. Building any range populates it, and
+  `ReverseNodeRange` short-circuits against it, so without this an abbreviation result would depend on whether an
+  earlier test happened to evaluate a matching range.
 - **`redfish_bmc`, `ipmi_bmc`, `smm`** return the address of a specific piece of test equipment, or skip when its
   variable is unset.
 

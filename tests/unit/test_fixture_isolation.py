@@ -21,6 +21,7 @@ run a nested session instead.
 """
 
 from confluent import core
+from confluent import noderange
 from confluent.config import configmanager as cfm
 
 
@@ -48,6 +49,12 @@ def test_fixtures_are_used_and_state_is_dirtied(pluginmap, configmanager):
     cfm.ConfigManager._notifierids['scribble'] = 1
     assert cfm.ConfigManager._cfgdir != BASELINE['cfgdir']
 
+    # Building any range populates a module-level cache that ReverseNodeRange
+    # reads. Left in place it would let this test decide another test's
+    # abbreviation result.
+    noderange.NodeRange('n[1-2]')
+    assert noderange.lastnoderange
+
 
 def test_core_resource_trees_are_restored():
     """Neither tree exists until the first _init_core() call, so "restored"
@@ -69,6 +76,14 @@ def test_mutable_globals_keep_their_identity_and_lose_the_mutations():
     test is still in them."""
     assert id(cfm._pendingchangesets) == BASELINE['pendingchangesets_id']
     assert 'scribble' not in cfm._pendingchangesets
+
+
+def test_noderange_cache_starts_clean():
+    """The previous test built a range. Every test must still begin with an
+    empty cache, or ReverseNodeRange short-circuits against whatever the last
+    test happened to evaluate and abbreviation results become order-dependent.
+    """
+    assert noderange.lastnoderange is None
 
 
 def test_configmanager_class_watchers_are_restored():

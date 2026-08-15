@@ -92,6 +92,27 @@ def _collect_garbage():
 
 
 @pytest.fixture(autouse=True)
+def _reset_noderange_cache():
+    """Keep noderange.lastnoderange from leaking between tests.
+
+    Every NodeRange construction rebinds this module global to the range it
+    just evaluated, and ReverseNodeRange.noderange consults it: if the cached
+    node set matches the one being abbreviated, it returns the cached range
+    string outright and skips the abbreviation logic. A range built by one
+    test would therefore be able to decide another test's abbreviation result.
+
+    Cleared before each test as well as restored after, so a test that
+    abbreviates always starts from a known-empty cache.
+    """
+    from confluent import noderange
+
+    saved = noderange.lastnoderange
+    noderange.lastnoderange = None
+    yield
+    noderange.lastnoderange = saved
+
+
+@pytest.fixture(autouse=True)
 def _isolate_service_cfg():
     """Keep a real /etc/confluent/service.cfg out of the test run.
 
