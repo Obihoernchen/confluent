@@ -1,9 +1,9 @@
 """Plugin dispatch through core.handle_path.
 
-This is the test that justifies pytest-asyncio over unittest's
-IsolatedAsyncioTestCase: the whole dispatch path is built on async generators,
-plugins yield their results, and consuming them requires `async for`. There is
-no way to express the stub plugins below as an asyncSetUp.
+The whole dispatch path is built on async generators: plugins yield their
+results and consuming them requires `async for`. IsolatedAsyncioTestCase could
+run these too, but the fixtures and parametrization pytest provides are what
+keep the stub wiring below to a few lines instead of a setUp per case.
 
 The routing mechanisms covered here, as defined by PluginRoute in core.py:
 

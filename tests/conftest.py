@@ -12,16 +12,18 @@ import os
 import pytest
 
 
-# Environment variables that enable the correspondingly marked tier. Tests
-# marked ``hardware`` need at least one of the CONFLUENT_TEST_* variables that
-# names the hardware they talk to; ``lab`` tests need the deployment lab.
+# Environment variables that enable the correspondingly marked tier. The
+# collection hook below is a coarse gate: it keeps a default run away from
+# hardware entirely. Per-target precision comes from the redfish_bmc, ipmi_bmc
+# and smm fixtures, so that naming one BMC does not enable tests for equipment
+# that is not present.
 _HARDWARE_ENV = ('CONFLUENT_TEST_REDFISH_BMC', 'CONFLUENT_TEST_IPMI_BMC',
                  'CONFLUENT_TEST_SMM')
 _LAB_ENV = ('CONFLUENT_TEST_LAB',)
 
 # Module-level state in configmanager that a test can reasonably disturb. The
-# datastore itself is a module global rather than instance state, so fixtures
-# have to snapshot and restore these or tests leak into each other.
+# datastore is a module global rather than instance state, so fixtures have to
+# snapshot and restore it or tests leak into each other.
 _CFM_GLOBALS = (
     '_cfgstore',
     'statelessmode',
@@ -33,6 +35,18 @@ _CFM_GLOBALS = (
     '_pendingchangesets',
     'cfgleader',
 )
+
+# Of the above, the ones holding a mutable container. Saving a reference does
+# not undo an in-place mutation, so these get a fresh empty container for the
+# duration of the test and the original object back afterwards.
+_CFM_MUTABLE_GLOBALS = ('_pendingchangesets',)
+
+# Class attributes on ConfigManager with the same problem. Nothing in the
+# current suite registers a watcher, but attribute-watch and node-collection
+# notification tests would otherwise accumulate callbacks across tests.
+_CFM_CLASS_MUTABLES = ('_attribwatchers', '_nodecollwatchers', '_notifierids')
+
+_UNSET = object()
 
 
 def pytest_configure(config):
@@ -91,6 +105,31 @@ def _isolate_service_cfg():
     conf._config = saved
 
 
+def _hardware_target(varname):
+    value = os.environ.get(varname)
+    if not value:
+        pytest.skip('needs {0}'.format(varname))
+    return value
+
+
+@pytest.fixture
+def redfish_bmc():
+    """Address of a Redfish BMC to test against, or skip."""
+    return _hardware_target('CONFLUENT_TEST_REDFISH_BMC')
+
+
+@pytest.fixture
+def ipmi_bmc():
+    """Address of an IPMI BMC to test against, or skip."""
+    return _hardware_target('CONFLUENT_TEST_IPMI_BMC')
+
+
+@pytest.fixture
+def smm():
+    """Address of an SMM to test against, or skip."""
+    return _hardware_target('CONFLUENT_TEST_SMM')
+
+
 @pytest.fixture
 def confluent_cfgdir(tmp_path):
     """An isolated configmanager datastore directory.
@@ -107,7 +146,14 @@ def confluent_cfgdir(tmp_path):
     cfgdir.mkdir()
 
     saved = {name: getattr(cfm, name) for name in _CFM_GLOBALS}
+    saved_class = {name: getattr(cfm.ConfigManager, name)
+                   for name in _CFM_CLASS_MUTABLES}
     saved_cfgdir = cfm.ConfigManager._cfgdir
+
+    for name in _CFM_MUTABLE_GLOBALS:
+        setattr(cfm, name, {})
+    for name in _CFM_CLASS_MUTABLES:
+        setattr(cfm.ConfigManager, name, {})
 
     cfm.ConfigManager._cfgdir = str(cfgdir)
     cfm.statelessmode = True
@@ -119,6 +165,8 @@ def confluent_cfgdir(tmp_path):
         cfm.ConfigManager._cfgdir = saved_cfgdir
         for name, value in saved.items():
             setattr(cfm, name, value)
+        for name, value in saved_class.items():
+            setattr(cfm.ConfigManager, name, value)
 
 
 @pytest.fixture
@@ -140,18 +188,30 @@ def pluginmap():
     injecting stubs is both faster and hermetic.
 
     Yields the plugin map; assign into it, and add routes to
-    ``core.noderesources`` as needed. Both are restored afterwards.
+    ``core.noderesources`` as needed. The plugin map and both resource trees
+    are restored afterwards.
+
+    The snapshot is taken before _init_core() runs, or the "original" state
+    would just be a freshly built tree. _init_core() rebinds noderesources and
+    nodegroupresources to new objects rather than mutating them, so the saved
+    references stay intact while the test mutates the fresh ones. Neither
+    global exists until the first _init_core() call, hence the sentinel.
     """
     from confluent import core
 
-    core._init_core()
     saved_plugins = dict(core.pluginmap)
-    saved_noderesources = core.noderesources
-    core.noderesources = dict(core.noderesources)
+    saved_resources = {name: getattr(core, name, _UNSET)
+                       for name in ('noderesources', 'nodegroupresources')}
+
+    core._init_core()
     core.pluginmap.clear()
     try:
         yield core.pluginmap
     finally:
         core.pluginmap.clear()
         core.pluginmap.update(saved_plugins)
-        core.noderesources = saved_noderesources
+        for name, value in saved_resources.items():
+            if value is _UNSET:
+                delattr(core, name)
+            else:
+                setattr(core, name, value)

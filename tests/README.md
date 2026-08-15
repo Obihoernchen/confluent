@@ -52,8 +52,16 @@ alongside the two `confluent` namespace packages.
 |---|---|---|
 | *(none)* | pure unit test, always runs | |
 | `integration` | temp datastore, sockets, subprocesses | always runs |
-| `hardware` | real BMC or running daemon | set `CONFLUENT_TEST_REDFISH_BMC`, `CONFLUENT_TEST_IPMI_BMC` or `CONFLUENT_TEST_SMM` |
+| `hardware` | real BMC or running daemon | set `CONFLUENT_TEST_REDFISH_BMC`, `CONFLUENT_TEST_IPMI_BMC` |
+| | | or `CONFLUENT_TEST_SMM` |
 | `lab` | a provisioned deployment lab (real PXE/BMC infrastructure) | set `CONFLUENT_TEST_LAB` |
+
+Marked tests are collected and reported as skipped, not deselected, so a run always says what it did not do.
+Use `-m hardware` to select only that tier, which does deselect everything else.
+
+The marker is a coarse gate that keeps a default run away from hardware entirely. For per-target precision use the
+`redfish_bmc`, `ipmi_bmc` and `smm` fixtures: each skips on its own variable, so naming one BMC does not enable
+tests for equipment that is not attached.
 
 `--strict-markers` is on, so a typo in a marker name is an error rather than a silently skipped selection.
 
@@ -75,6 +83,15 @@ All in `conftest.py`.
   before anything imports it.
 - **`_collect_garbage`** (autouse) forces a collection after each test, so unawaited-coroutine warnings are blamed
   on the test that caused them rather than some later one.
+- **`redfish_bmc`, `ipmi_bmc`, `smm`** return the address of a specific piece of test equipment, or skip when its
+  variable is unset.
+
+Both the `configmanager` and `pluginmap` fixtures work by patching module globals, because that is how the code
+under test stores its state. Restoration is therefore a correctness property of the suite, not a nicety: a leak
+shows up as an unrelated test failing later, or as one passing because of what a previous test left behind.
+Restoring a reference is not enough for a mutable container, so the fixtures swap in fresh containers and put the
+originals back. `tests/unit/test_fixture_isolation.py` checks that they do. Extend it when you add a fixture that
+touches global state.
 
 ## Writing async tests
 
@@ -95,24 +112,31 @@ plain functions with fixtures, but there is no need to rewrite a working test cl
 
 ## Python version policy
 
-Two separate guarantees:
+Three constraints, which are not the same thing:
 
-| | floor | enforced by |
+| | requirement | enforced by |
 |---|---|---|
-| production code (`confluent_server/`, `confluent_client/`) | 3.9 | static analysis |
-| test code (`tests/`) | 3.10+ | the interpreter you run pytest with |
+| production code runs on | 3.9 | static analysis (see below) |
+| **all** code, tests included, must parse on | the oldest version in the compileall matrix | CI |
+| the suite is executed on | 3.10+ | the interpreter you run pytest with |
 
-Test code may use 3.10+ features freely; tests never ship. Production code must stay 3.9-clean, because installed
-systems run it. pytest cannot check that from a single interpreter, so it is a static-analysis job. Note that
-`ruff.toml` currently claims `target-version = "py37"` and `pyrefly.toml` claims `python-version = "3.6"`, both
-stale: correcting them to `py39` / `3.9` is what would actually catch a 3.10-only construct entering production
-code.
+The middle row is easy to overlook. The `python-compileall` job in `.github/workflows/ci.yml` runs
+`compileall` over the whole tree, `tests/` included, on every version in its matrix down to 3.8. So a test using
+newer *syntax* (a `match` statement, for instance) fails CI even though no one would ever run the suite on 3.8.
+Newer standard-library *calls* are fine, because `compileall` only parses. If a test ever genuinely needs new
+syntax, the fix is to exclude `tests/` from the older passes and say so here, not to discover it in a CI failure.
+
+Running the suite only on a modern interpreter also means it cannot, by itself, verify that production code still
+works on 3.9. That is a static-analysis job. Note that `ruff.toml` currently claims `target-version = "py37"` and
+`pyrefly.toml` claims `python-version = "3.6"`, both stale: correcting them to `py39` / `3.9` is what would
+actually catch a 3.10-only construct entering production code. Executing the suite on 3.9 as well would be
+stronger still, and is worth considering whenever a CI test job is added.
 
 Relevant hazards: `asyncio.to_thread` needs 3.9+, module-level `asyncio.Lock()` in `configmanager.py` is
 warning-free only on 3.10+, and `crypt` left the stdlib in 3.13.
 
-Only a hypothetical Python 3.9 test environment would need `pytest<9` and `pytest-asyncio<1.3`, which is why
-`requirements-test.txt` pins nothing.
+A Python 3.9 test environment would need `pytest<9` and `pytest-asyncio<1.3`. That is the only reason those bounds
+exist, and why `requirements-test.txt` does not apply them to the default setup.
 
 ## Non-goals
 
