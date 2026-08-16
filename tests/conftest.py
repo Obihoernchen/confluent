@@ -5,6 +5,7 @@ re-implement path bootstrapping, datastore isolation or plugin stubbing. See
 tests/README.md for the conventions.
 """
 
+import asyncio
 import configparser
 import functools
 import gc
@@ -65,23 +66,6 @@ _UNSET = object()
 
 
 def pytest_configure(config):
-    # asyncio reads this when a loop is created, so setting it before any test
-    # runs is enough. Debug mode reports slow callbacks, coroutines that were
-    # never scheduled and exceptions never retrieved from a task, all of which
-    # are realistic failure modes in the console and plugin dispatch paths.
-    #
-    # It is deliberately not set when a hardware target is configured. aiohttp
-    # derives its own DEBUG flag from this same variable (aiohttp.helpers) and
-    # uses it to build its response parser with lax=not DEBUG. Strict parsing
-    # rejects a repeated singleton header, and real BMCs send them: an OpenBMC
-    # tested here returns ETag twice on the Redfish service root, which strict
-    # aiohttp turns into "400, Duplicate 'Etag' header found." Production
-    # confluent runs without this variable and accepts the response, so
-    # leaving debug on would fail hardware tests for a defect that does not
-    # exist. Note "0" would not help: the check is bool() of the string.
-    if not any(os.environ.get(name) for name in _HARDWARE_ENV):
-        os.environ.setdefault('PYTHONASYNCIODEBUG', '1')
-
     # confluent.messages reads /etc/confluent/service.cfg at import time (it
     # calls cfgfile.get_option at module scope), so neutralize the config
     # before any test module imports it. A stray service.cfg on a developer
@@ -102,6 +86,32 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_hardware)
         if 'lab' in item.keywords and not lab_ready:
             item.add_marker(skip_lab)
+
+
+@pytest.fixture(autouse=True)
+async def _asyncio_debug():
+    """Run every test's event loop in debug mode.
+
+    Debug mode reports slow callbacks, coroutines that were never scheduled
+    and exceptions never retrieved from a task, all realistic failure modes in
+    the console and plugin dispatch paths. set_debug also turns on coroutine
+    origin tracking while the loop is running, so warnings carry the source
+    location of the coroutine rather than just its name.
+
+    Set on the loop rather than through PYTHONASYNCIODEBUG, which is a
+    process-wide flag that libraries read for their own purposes. aiohttp
+    captures it at import as aiohttp.helpers.DEBUG and builds its HTTP
+    response parser with lax=not DEBUG, and strict parsing rejects a repeated
+    singleton header. Real BMCs send them: an OpenBMC tested here returns ETag
+    twice on the Redfish service root, so the variable turned a response
+    production accepts into "400, Duplicate 'Etag' header found." Nothing
+    consults loop.get_debug() for parsing, so setting it here gets the
+    diagnostics without changing how any library treats the wire.
+
+    Exporting PYTHONASYNCIODEBUG yourself reintroduces that, and the hardware
+    tier will fail against firmware that is fine in production.
+    """
+    asyncio.get_running_loop().set_debug(True)
 
 
 @pytest.fixture(autouse=True)

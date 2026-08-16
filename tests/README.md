@@ -160,11 +160,19 @@ The codebase is asyncio throughout and plugin dispatch is built on async generat
   is a timing dependency, and with `--timeout=60` a suite full of them is both slow and unreliable.
 - **A forgotten `await` fails the run.** `pytest.ini` turns "coroutine ... was never awaited" into an error. This is
   the single most likely regression in a codebase with this many await sites.
-- Asyncio debug mode is on for the whole session, which reports slow callbacks and exceptions never retrieved from
-  a task. It is switched off when a hardware target is configured: aiohttp derives its own `DEBUG` from
-  `PYTHONASYNCIODEBUG` and builds its response parser with `lax=not DEBUG`, and strict parsing rejects repeated
-  singleton headers that real BMCs send. Production runs without the variable, so leaving it on would fail hardware
-  tests for a defect that does not exist.
+- Asyncio debug mode is on for every test, which reports slow callbacks, exceptions never retrieved from a task,
+  and the source location of a coroutine rather than just its name.
+
+  It is set on the event loop, not through `PYTHONASYNCIODEBUG`. That variable is process-wide and libraries read
+  it for their own purposes: aiohttp captures it at import as `aiohttp.helpers.DEBUG` and builds its HTTP response
+  parser with `lax=not DEBUG`, and strict parsing rejects a repeated singleton header. Real BMCs send them, so the
+  variable turns a response production accepts into `400, Duplicate 'Etag' header found`. Nothing consults
+  `loop.get_debug()` for parsing, so setting it on the loop gets the diagnostics without changing how any library
+  treats the wire.
+
+  **Do not export `PYTHONASYNCIODEBUG` yourself.** It reintroduces the strict parsing, and the hardware tier will
+  then fail against firmware that is fine in production. Note that `PYTHONASYNCIODEBUG=0` does not disable it
+  either: both asyncio and aiohttp test `bool()` of the string.
 
 Existing `unittest.TestCase` and `IsolatedAsyncioTestCase` classes run under pytest unchanged. New tests should be
 plain functions with fixtures, but there is no need to rewrite a working test class just to move it here.
