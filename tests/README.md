@@ -221,9 +221,14 @@ CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml python3 -m pytest -
 CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml   python3 -m pytest -m hardware
 ```
 
-The IPMI one needs `ipmi_sim`, from OpenIPMI's lanserv tools (`OpenIPMI-lanserv` on Fedora and EL) and nothing
-else: the `ipmi_simulator` fixture starts and stops it, so that command is the whole setup. The Redfish one still
-needs its mockup servers started by hand, per `tests/support/mockups/README.md`.
+Each command above is the whole setup: the fixtures start what a device stands in for and stop it afterwards.
+The IPMI one needs `ipmi_sim`, from OpenIPMI's lanserv tools (`OpenIPMI-lanserv` on Fedora and EL). The Redfish
+one needs podman or docker, and pulls DMTF's mockup server image on first use. Where neither is present the tests
+skip rather than fail, so an inventory naming a stand-in stays usable on a machine that cannot run it.
+
+Something already listening on the port is used as it stands and left running, so serving a mockup by hand per
+`tests/support/mockups/README.md` still works, and a second xdist worker arriving for the same device does not
+start a duplicate.
 
 Neither is a substitute for the other, and the difference is worth keeping in mind when reading a green run:
 
@@ -328,6 +333,11 @@ All in `conftest.py`.
   afterwards. A simulator already listening on the port is used as it stands and left running, which covers one
   started by hand and a second xdist worker arriving for the same device. It skips, rather than fails, when
   `ipmi_sim` is not installed.
+- **`redfish_mockups`** does the same for any entry carrying `mockup: <name>`, serving that capture with DMTF's
+  mockup server in a container on the port in the entry's address. A bare name is one of the bundles under
+  `tests/support/mockups`; anything with a separator is a path, so an inventory kept outside the repository can
+  point at a capture of a real machine. Whether the bundle is short form is read off the tree rather than
+  configured, and the certificate it presents is generated per run rather than committed.
 - **`redfish_command`** returns a connected aiohmi Redfish client, and additionally needs
   `CONFLUENT_TEST_REDFISH_USER` and `CONFLUENT_TEST_REDFISH_PASSWORD`. Credentials come from the environment only
   and must never be committed. Do not run the hardware tier with `--showlocals`, which would print the password

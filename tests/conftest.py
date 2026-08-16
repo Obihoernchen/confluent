@@ -16,8 +16,11 @@ import os
 import pathlib
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
+import time
+import urllib.request
 
 import pytest
 import pytest_asyncio
@@ -118,6 +121,18 @@ _SIMULATOR = 'ipmi_sim'
 # What it prints once the channel is bound. Waiting for this rather than
 # sleeping is the difference between a tier that is slow and one that is flaky.
 _SIMULATOR_READY = 'Opened UDP port'
+
+# The Redfish counterpart of the simulator: a captured service replayed by
+# DMTF's mockup server. An inventory entry opts in with mockup: <name>, and the
+# port in its address is where that capture is served. Unlike ipmi_sim this is
+# a container, because the server is published as one and nothing about it is
+# worth installing on a developer's machine.
+_MOCKUP_IMAGE = 'docker.io/dmtf/redfish-mockup-server:latest'
+_MOCKUP_DIRECTORY = pathlib.Path(__file__).parent / 'support' / 'mockups'
+
+# How long to wait for a replayed service to answer its root. Generous next to
+# how long it takes, and still well inside the per-test timeout in addopts.
+_MOCKUP_READY_TIMEOUT = 30
 
 
 def pytest_addoption(parser):
@@ -536,6 +551,180 @@ def ipmi_simulator(tmp_path_factory):
         simulator.stdout.close()
 
 
+@functools.lru_cache(maxsize=None)
+def _container_runtime():
+    """podman for preference, docker if that is what is installed."""
+    for runtime in ('podman', 'docker'):
+        if shutil.which(runtime):
+            return runtime
+    return None
+
+
+def _mockup_capture(name):
+    """Where a ``mockup:`` value resolves to on disk.
+
+    A bare name is one of the bundles vendored in tests/support/mockups.
+    Anything carrying a separator is taken as a path, so an inventory kept
+    outside the repository can point at a capture of a real machine, which
+    holds that machine's identity and does not belong in one.
+    """
+    path = pathlib.Path(name).expanduser()
+    if len(path.parts) == 1:
+        path = _MOCKUP_DIRECTORY / name
+    return path
+
+
+def _mockup_answers(port):
+    """Whether a Redfish service root is already being served on this port."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(
+                'https://127.0.0.1:{0}/redfish/v1'.format(port),
+                context=context, timeout=2) as answer:
+            return answer.status == 200
+    except Exception:  # anything at all means not ready
+        # Connection refused while the container comes up, a handshake caught
+        # mid-flight, or something else entirely on the port. None of them are
+        # worth telling apart here: the caller either waits or gives up.
+        return False
+
+
+@functools.lru_cache(maxsize=None)
+def _mockup_image(runtime):
+    """Make sure the replay server image is present, or skip.
+
+    Pulled explicitly rather than left to ``run``, so that "no image and no
+    network" is a skip while a container that fails to start afterwards stays a
+    failure. The first pull is most of 200MB and can outlast the per-test
+    timeout in addopts, so continuous integration wants the image pulled before
+    the run rather than discovered here.
+    """
+    present = subprocess.run([runtime, 'image', 'inspect', _MOCKUP_IMAGE],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    if present.returncode == 0:
+        return
+    pulled = subprocess.run([runtime, 'pull', _MOCKUP_IMAGE],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    if pulled.returncode:
+        pytest.skip('could not obtain {0}: {1}'.format(
+            _MOCKUP_IMAGE, pulled.stdout.strip()))
+
+
+def _mockup_certificate(directory):
+    """A throwaway self signed pair for the replay servers to present.
+
+    confluent speaks https only and this tier does not verify, so any pair
+    does. Generated per run rather than committed: a private key in a
+    repository is something a scanner finds and reports, however inert it is.
+    """
+    if shutil.which('openssl') is None:
+        pytest.skip('a replayed Redfish service needs openssl to generate a '
+                    'certificate for it')
+    subprocess.run(
+        ['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+         '-keyout', str(directory / 'key.pem'),
+         '-out', str(directory / 'cert.pem'),
+         '-days', '365', '-subj', '/CN=localhost'],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return directory
+
+
+def _start_mockup(runtime, container, capture, host, port, certificates):
+    """Serve one capture, replacing anything stale under the same name."""
+    arguments = ['-D', '/mockup', '-s', '-p', '8000',
+                 # The server binds its own loopback by default, which a
+                 # published port cannot reach from outside the container.
+                 '-H', '0.0.0.0',
+                 '--cert', '/certs/cert.pem', '--key', '/certs/key.pem']
+    if (capture / 'index.json').exists():
+        # Short form: the DMTF bundles leave the /redfish/v1 prefix out of
+        # their layout and a capture taken from a live service does not. Which
+        # one this is can be read off the tree, so it is, rather than being one
+        # more thing an inventory has to get right.
+        arguments.append('-S')
+
+    subprocess.run([runtime, 'rm', '-f', container],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started = subprocess.run(
+        [runtime, 'run', '-d', '--name', container,
+         '-p', '{0}:{1}:8000'.format(host, port),
+         '--security-opt', 'label=disable',
+         '-v', '{0}:/mockup:ro'.format(capture),
+         '-v', '{0}:/certs:ro'.format(certificates),
+         _MOCKUP_IMAGE] + arguments,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if started.returncode:
+        pytest.fail('could not serve the {0} mockup:\n{1}'.format(
+            capture.name, started.stdout.strip()))
+
+
+def _wait_for_mockup(runtime, container, port):
+    """Block until the replayed service answers its root, or say why not."""
+    deadline = time.monotonic() + _MOCKUP_READY_TIMEOUT
+    while time.monotonic() < deadline:
+        if _mockup_answers(port):
+            return
+        time.sleep(0.25)
+    logs = subprocess.run([runtime, 'logs', container], stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True)
+    pytest.fail('the mockup on port {0} never answered:\n{1}'.format(
+        port, logs.stdout.strip()))
+
+
+@pytest.fixture(scope='session')
+def redfish_mockups(tmp_path_factory):
+    """Serve the captures any inventory entry asks for, and stop them after.
+
+    The Redfish counterpart of ipmi_simulator, and the same contract: yields a
+    callable taking a target, entries without a ``mockup:`` pass through
+    untouched, and a service already answering on the port is used as it stands
+    rather than replaced. That covers one started by hand and a second xdist
+    worker arriving for the same device.
+
+    Skips rather than fails where the machine cannot serve one at all, so an
+    inventory naming a capture is still usable without a container runtime.
+    """
+    started = []
+    certificates = []
+
+    def ensure(target):
+        capture_name = (target or {}).get('mockup')
+        if not capture_name:
+            return
+        runtime = _container_runtime()
+        if runtime is None:
+            pytest.skip('a replayed Redfish service needs podman or docker')
+
+        capture = _mockup_capture(capture_name)
+        if not capture.is_dir():
+            pytest.fail('mockup {0!r} is not a directory: {1}'.format(
+                capture_name, capture))
+
+        host, port = _split_port(target['address'])
+        if _mockup_answers(port):
+            return
+
+        _mockup_image(runtime)
+        if not certificates:
+            certificates.append(
+                _mockup_certificate(tmp_path_factory.mktemp('mockupcerts')))
+
+        container = 'confluent-test-mockup-{0}'.format(port)
+        _start_mockup(runtime, container, capture, host, port, certificates[0])
+        started.append((runtime, container))
+        _wait_for_mockup(runtime, container, port)
+
+    yield ensure
+
+    for runtime, container in started:
+        subprocess.run([runtime, 'rm', '-f', container],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _wait_for_simulator(simulator, port):
     """Block until the simulator says it has the channel, or explain why not."""
     while True:
@@ -624,7 +813,7 @@ async def ipmi_command(ipmi_target, ipmi_simulator):
 
 
 @pytest_asyncio.fixture(scope='session', loop_scope='session')
-async def bmc_command(bmc_target, ipmi_simulator):
+async def bmc_command(bmc_target, ipmi_simulator, redfish_mockups):
     """A connected client for whichever transport this device speaks.
 
     For tests that are about what confluent asks of a BMC rather than about how
@@ -644,11 +833,12 @@ async def bmc_command(bmc_target, ipmi_simulator):
         async with _ipmi_client(bmc_target) as command:
             yield command
     else:
+        redfish_mockups(bmc_target)
         yield await _redfish_client(bmc_target)
 
 
 @pytest.fixture
-async def redfish_command(redfish_target):
+async def redfish_command(redfish_target, redfish_mockups):
     """A connected aiohmi Redfish client, one per configured BMC.
 
     Tests requesting this run once per device in the inventory, so a failure
@@ -681,6 +871,7 @@ async def redfish_command(redfish_target):
     fresh one. Under xdist the cache is per worker, which with one device per
     worker still comes to one session per device.
     """
+    redfish_mockups(redfish_target)
     return await _redfish_client(redfish_target)
 
 
@@ -771,27 +962,35 @@ def confluent_service(tmp_path_factory):
 
 
 @pytest.fixture
-def service_nodes(confluent_service):
+def service_nodes(confluent_service, ipmi_simulator, redfish_mockups):
     """Every node the test service knows, for tests that need them together.
 
     Deliberately not parametrized per device: the point of asking for all of
     them at once is to drive one request across several, which is the only
     place in the suite that produces genuinely concurrent dispatch.
+
+    That means every stand-in has to be up, not just the one device a test was
+    parametrized on, so this starts them all.
     """
+    for kind in ('redfish', 'ipmi'):
+        for target in _targets(kind):
+            ipmi_simulator(target)
+            redfish_mockups(target)
     return sorted(_service_nodes())
 
 
 @pytest.fixture
-def service_node(bmc_target, ipmi_simulator):
+def service_node(bmc_target, ipmi_simulator, redfish_mockups):
     """The name the test service knows this device by.
 
     Derived from bmc_target so the CLI tests inherit the same parametrization,
     xdist grouping and per-device safety ceiling as everything else.
 
-    Starts the simulator behind a simulated device, so the CLI tier reaches one
-    the same way it reaches a real BMC.
+    Starts whatever stands in for a simulated device, so the CLI tier reaches
+    one the same way it reaches a real BMC.
     """
     ipmi_simulator(bmc_target)
+    redfish_mockups(bmc_target)
     return str(bmc_target.get('name', bmc_target['address']))
 
 

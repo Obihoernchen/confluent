@@ -5,9 +5,11 @@
 #
 #   CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml pytest -m hardware
 #
-# Something has to serve them first. See tests/support/mockups/README.md; each
-# bundle needs its own server instance on the port named below, started with
-# -S because these use the short form layout.
+# Nothing has to be started by hand: the redfish_mockups fixture serves each
+# mockup: named below on the port in its address, and stops it afterwards. It
+# needs podman or docker, and skips where there is neither. A service already
+# answering on the port is used as it stands, so serving one by hand per
+# tests/support/mockups/README.md still works and is not disturbed.
 #
 # The mockups describe fictional hardware, so every entry takes the generic
 # code path. Vendor handlers need a capture of a real machine, which is not
@@ -24,6 +26,7 @@ defaults:
 redfish:
   - name: dmtf-rackmount
     address: 127.0.0.1:8481
+    mockup: public-rackmount1
     known_failures:
       # A confluent defect this bundle exposed on the first run. Health
       # reporting indexes PCIeDevices without checking the service publishes
@@ -36,6 +39,7 @@ redfish:
 
   - name: dmtf-liquid-cooled
     address: 127.0.0.1:8482
+    mockup: public-liquid-cooled-server
 
 # The rest are captured and documented in mockups/README.md but not enabled
 # yet, because confluent does not currently reach them cleanly. Each is a
