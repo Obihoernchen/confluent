@@ -374,13 +374,6 @@ def _isolate_service_cfg():
     conf._config = saved
 
 
-def _hardware_target(varname):
-    value = os.environ.get(varname)
-    if not value:
-        pytest.skip('needs {0}'.format(varname))
-    return value
-
-
 @functools.lru_cache(maxsize=None)
 def _inventory():
     """The parsed equipment inventory, or an empty one."""
@@ -830,12 +823,6 @@ async def _ipmi_client(target):
         await command.ipmi_session.logout()
 
 
-@pytest.fixture
-def redfish_bmc():
-    """Address of a Redfish BMC to test against, or skip."""
-    return _hardware_target('CONFLUENT_TEST_REDFISH_BMC')
-
-
 @pytest_asyncio.fixture(scope='session', loop_scope='session')
 async def ipmi_command(ipmi_target, ipmi_simulator):
     """A connected aiohmi IPMI client, one per configured device.
@@ -926,18 +913,6 @@ async def redfish_command(redfish_target, redfish_mockups):
     """
     redfish_mockups(redfish_target)
     return await _redfish_client(redfish_target)
-
-
-@pytest.fixture
-def ipmi_bmc():
-    """Address of an IPMI BMC to test against, or skip."""
-    return _hardware_target('CONFLUENT_TEST_IPMI_BMC')
-
-
-@pytest.fixture
-def smm():
-    """Address of an SMM to test against, or skip."""
-    return _hardware_target('CONFLUENT_TEST_SMM')
 
 
 # What a service or a tool may say that means it found something. Matched

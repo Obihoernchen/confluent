@@ -94,9 +94,9 @@ Every `hardware` test additionally carries one **safety level**, described below
 Marked tests are collected and reported as skipped, not deselected, so a run always says what it did not do.
 Use `-m hardware` to select only that tier, which does deselect everything else.
 
-The marker is a coarse gate that keeps a default run away from hardware entirely. For per-target precision use the
-`redfish_bmc`, `ipmi_bmc` and `smm` fixtures: each skips on its own variable, so naming one BMC does not enable
-tests for equipment that is not attached.
+The marker plus `--run-hardware` is the coarse gate. Per-target precision comes from the `*_target` fixtures: a
+test asking for `ipmi_target` is skipped when the inventory names no IPMI device, so configuring one BMC does not
+enable tests for equipment that is not attached.
 
 ### Safety levels
 
@@ -358,8 +358,6 @@ All in `conftest.py`.
 - **`_reset_noderange_cache`** (autouse) clears `noderange.lastnoderange`. Building any range populates it, and
   `ReverseNodeRange` short-circuits against it, so without this an abbreviation result would depend on whether an
   earlier test happened to evaluate a matching range.
-- **`redfish_bmc`, `ipmi_bmc`, `smm`** return the address of a specific piece of test equipment, or skip when its
-  variable is unset.
 - **`ipmi_command`** returns a connected aiohmi IPMI client, and **`bmc_command`** returns whichever client the
   device speaks, for tests that work either way.
 

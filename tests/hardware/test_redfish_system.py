@@ -4,15 +4,15 @@ The first tests in the hardware tier. They exist to catch the class of
 regression that no amount of mocking finds: real firmware answering
 differently from the fixture someone wrote from the specification.
 
-Run them by naming a BMC and credentials in the environment:
+Run them by naming a device in an inventory, or against a replayed capture,
+which needs no hardware at all:
 
-    CONFLUENT_TEST_REDFISH_BMC=10.0.0.1 \\
-    CONFLUENT_TEST_REDFISH_USER=admin \\
-    CONFLUENT_TEST_REDFISH_PASSWORD=... \\
-    python3 -m pytest -m hardware
+    CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml \\
+    python3 -m pytest -m hardware --run-hardware
 
-The address accepts a :port for a BMC reached through a tunnel. Without these
-variables the tests are skipped, so a default run never touches hardware.
+An address accepts a :port for a BMC reached through a tunnel. Without
+--run-hardware the tests are skipped whatever the inventory holds, so a
+default run never touches hardware.
 
 Everything here is strictly read-only. Nothing in this file may power a node,
 set a boot device, change a setting or write firmware. A hardware test that
