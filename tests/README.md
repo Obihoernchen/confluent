@@ -64,7 +64,7 @@ when a BMC misbehaves you want "the sensor tests", not "the read-only tests".
 Two shapes are worth keeping distinct:
 
 - **A sweep**, parametrized over many operations, asserting one property that holds for all of them.
-  `test_redfish_reads.py` is this: every read either answers or refuses with a reason. Parametrizing gives one
+  `test_bmc_reads.py` is this: every read either answers or refuses with a reason. Parametrizing gives one
   result line per operation per device, so the pass and refuse pattern across a fleet is readable straight from
   the summary, without a hand-written report.
 - **Subsystem files** for invariants specific to one area, where the assertion is about meaning rather than shape.
