@@ -18,6 +18,10 @@ import sys
 import tempfile
 
 
+# The socket listener task, see run() for why it is kept here.
+_listener = None
+
+
 def _configure():
     from confluent.config import configmanager as cfm
 
@@ -48,7 +52,11 @@ async def main(socketpath, nodes):
     sockapi.auditlog = log.Logger('audit')
     sockapi.tracelog = log.Logger('trace')
 
-    asyncio.ensure_future(
+    # Held in a name for the lifetime of the process. A task referenced by
+    # nothing may be collected mid-flight, which would take the socket
+    # listener with it and leave the service accepting nothing.
+    global _listener
+    _listener = asyncio.ensure_future(
         sockapi._unixdomainhandler(socketpath=socketpath))
 
     while not os.path.exists(socketpath):
