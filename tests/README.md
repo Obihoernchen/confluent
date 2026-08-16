@@ -212,9 +212,9 @@ Replay uses a captured mockup rather than a generic emulator, because a capture 
 that machine answered, vendor extensions included, and so exercises the OEM handler that machine selects. A generic
 emulator only ever reaches the generic path.
 
-`tests/support/capture-mockups.py` captures a device with DMTF's Redfish-Mockup-Creator, and
-`tests/support/sanitize-mockup.py` prunes the specification documents and replaces identifying values. Both carry
-their usage in their docstrings. Serve a capture with DMTF's mockup server:
+`tests/support/capture-mockups.py` captures a device, running DMTF's Redfish-Mockup-Creator from their published
+container so there is nothing to clone or install. It prunes the specification documents afterwards, since
+confluent never requests them. Its docstring carries the details. Serve a capture with DMTF's mockup server:
 
 ```sh
 podman run -d -p 8451:8000 --security-opt label=disable \

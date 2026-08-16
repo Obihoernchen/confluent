@@ -6,12 +6,14 @@ writes the tree in the layout their mockup server replays. This runs it once
 per device from the same inventory the tests use, and keeps credentials out of
 the process list.
 
-    git clone https://github.com/DMTF/Redfish-Mockup-Creator.git
-    pip install 'redfish>=2.1.0'
-
     ./capture-mockups.py --inventory ~/.confluent-test-bmcs.yaml \\
-        --output ~/git/confluent-test-mockups \\
-        --creator ~/git/Redfish-Mockup-Creator/redfishMockupCreate.py
+        --output ~/git/confluent-test-mockups
+
+The creator runs from DMTF's published container, so there is nothing to clone
+and no python dependency to install. The container runs with host networking,
+which matters for a BMC reached through a tunnel: without it, a loopback
+address in the inventory would resolve to the container's own loopback rather
+than the tunnel.
 
 Serve a capture with:
 
@@ -56,7 +58,7 @@ import yaml
 # and UpdateService. On one BMC here they were half of a 34MB capture.
 # $metadata and odata are the same content under the names the service
 # advertises them by.
-PRUNE = ('JsonSchemas', 'schemas', 'metadata', '$metadata', 'odata')
+PRUNE = ('JsonSchemas', 'schemas', 'schema', 'metadata', '$metadata', 'odata')
 
 
 def devices(inventory_path):
@@ -82,16 +84,19 @@ def prune(root):
     return removed
 
 
-def capture(device, output, creator, maxlogentries):
+def capture(device, output, runtime, image, maxlogentries):
     name = str(device.get('name', device['address']))
     destination = os.path.join(output, name)
+    os.makedirs(destination, exist_ok=True)
 
     config = configparser.ConfigParser()
     config['Authentication'] = {'user': device['user'],
                                 'password': device.get('password') or ''}
     config['Connection'] = {'rhost': device['address'], 'Secure': 'true',
                             'Auth': 'Session'}
-    config['Output'] = {'Dir': destination,
+    # The image fixes the output at /mockup, which is where destination is
+    # mounted, so Dir here is only for the record it writes.
+    config['Output'] = {'Dir': '/mockup',
                         'description': 'captured from {0}'.format(name)}
     config['Options'] = {'Headers': 'true', 'Time': 'false', 'quiet': 'false',
                          'trace': 'false',
@@ -108,7 +113,12 @@ def capture(device, output, creator, maxlogentries):
             config.write(target)
         # Output is not captured, so progress reaches the terminal. A capture
         # takes minutes and silence is indistinguishable from a hang.
-        completed = subprocess.run([sys.executable, creator, '--config', path])
+        completed = subprocess.run([
+            runtime, 'run', '--rm', '--network', 'host',
+            '--security-opt', 'label=disable',
+            '-v', '{0}:/mockup'.format(os.path.abspath(destination)),
+            '-v', '{0}:/config.ini:ro'.format(path),
+            image, '--config', '/config.ini'])
     finally:
         os.remove(path)
 
@@ -124,8 +134,11 @@ def main():
                         help='inventory YAML, as used by CONFLUENT_TEST_HARDWARE')
     parser.add_argument('--output', required=True,
                         help='directory to write one mockup per device into')
-    parser.add_argument('--creator', required=True,
-                        help='path to DMTF redfishMockupCreate.py')
+    parser.add_argument('--runtime', default='podman',
+                        help='container runtime (default podman)')
+    parser.add_argument('--image',
+                        default='docker.io/dmtf/redfish-mockup-creator:latest',
+                        help='creator image')
     parser.add_argument('--maxlogentries', type=int, default=20,
                         help='log entries per log service (default 20)')
     parser.add_argument('--keep-schemas', action='store_true',
@@ -133,14 +146,14 @@ def main():
                              'which are pruned by default')
     arguments = parser.parse_args()
 
-    if not os.path.isfile(arguments.creator):
-        parser.error('no creator at {0}'.format(arguments.creator))
+    if not shutil.which(arguments.runtime):
+        parser.error('no {0} on PATH'.format(arguments.runtime))
     os.makedirs(arguments.output, exist_ok=True)
 
     failures = 0
     for device in devices(arguments.inventory):
         name, returncode, resources, destination = capture(
-            device, arguments.output, arguments.creator,
+            device, arguments.output, arguments.runtime, arguments.image,
             arguments.maxlogentries)
         pruned = 0 if arguments.keep_schemas else prune(destination)
         sys.stderr.write('{0}: {1} resources, {2} specification directories '
