@@ -214,6 +214,19 @@ def pytest_collection_modifyitems(config, items):
             'hardware tests must carry exactly one of {0}:\n  {1}'.format(
                 ', '.join(_SAFETY_LEVELS), '\n  '.join(undeclared)))
 
+    # Refused here rather than left to be discovered, because the failure is
+    # silent: _service_nodes keys by name, so a second device with the same one
+    # replaces the first and stops being tested through the CLI, while the run
+    # still reports a full pass. Listing one machine under two methods is a
+    # reasonable thing to want; it just needs two names.
+    duplicates = _duplicate_target_names()
+    if duplicates:
+        raise pytest.UsageError(
+            'each inventory name must identify one device, and these do '
+            'not:\n  {0}'.format('\n  '.join(
+                '{0}, listed under {1}'.format(name, ' and '.join(kinds))
+                for name, kinds in sorted(duplicates.items()))))
+
     run_ceiling = config.getoption('hw_level')
     for item in items:
         if 'hardware' in item.keywords and not hardware_ready:
@@ -408,6 +421,28 @@ def _targets(kind):
                                 'CONFLUENT_TEST_REDFISH_ALLOW',
                                 _SAFETY_LEVELS[0])})
     return targets
+
+
+def _duplicate_target_names():
+    """Names an inventory gives to more than one device, and where.
+
+    A name is both the node the CLI tier defines and the id a failure is
+    reported under, so it has to mean one device. Checked across every method
+    rather than within one, since the same machine reached two ways is exactly
+    when this is easy to write by accident.
+    """
+    kinds = sorted({kind for group in _TARGET_FIXTURES.values()
+                    for kind in group})
+    seen = {}
+    duplicates = {}
+    for kind in kinds:
+        for target in _targets(kind):
+            name = str(target.get('name', target['address']))
+            if name in seen:
+                duplicates.setdefault(name, [seen[name]]).append(kind)
+            else:
+                seen[name] = kind
+    return duplicates
 
 
 def _parametrize_targets(metafunc, kinds, argname):
