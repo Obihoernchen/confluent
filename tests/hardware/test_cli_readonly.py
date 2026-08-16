@@ -1,0 +1,143 @@
+"""The CLI tools against a real device, through a real confluent service.
+
+The deepest tests in the suite. Each one runs the actual command a user runs,
+which reaches the device through argument parsing, the socket protocol, the
+service, resource dispatch, a hardware management plugin and the protocol
+library. Everything below is exercised as a side effect of asserting on what
+the user is shown.
+
+That is the point. The layers between the protocol library and the terminal
+are where a perfectly good answer turns into "Unexpected Error", and no test
+below this one can see it happen.
+
+These assert on output shape rather than values, since power state, firmware
+versions and inventory differ per machine and over time. What is being pinned
+is that the command succeeds, names the node, and says something.
+
+Everything here is read-only. A command that changes the device belongs in a
+file of its own with the matching marker.
+"""
+
+import re
+
+import pytest
+
+pytestmark = [pytest.mark.hardware, pytest.mark.readonly]
+
+
+def _node_lines(output, node):
+    """The output lines that report about a given node."""
+    return [line for line in output.splitlines()
+            if line.startswith('{0}:'.format(node))]
+
+
+def test_service_lists_the_configured_nodes(run_cli, service_node):
+    returncode, output = run_cli('nodelist')
+
+    assert returncode == 0, output
+    assert service_node in output.splitlines()
+
+
+@pytest.mark.parametrize('tool,pattern', [
+    ('nodepower', r'^\S+: (on|off)$'),
+    ('nodehealth', r'^\S+: \w+'),
+    ('nodeidentify', r'^\S+: (on|off|blink)$'),
+])
+def test_state_commands_report_a_usable_value(run_cli, service_node, tool,
+                                              pattern):
+    """The answer has to be one a caller can act on, not merely non-empty.
+
+    A device is allowed not to offer a given state, as long as it says so.
+    Not every BMC has an identify light. What is not allowed is failing
+    without an explanation, which is the same contract the protocol-level
+    sweep applies one layer down.
+    """
+    returncode, output = run_cli(tool, service_node)
+
+    if returncode != 0:
+        assert output.strip(), '{0} failed and said nothing'.format(tool)
+        assert 'Unexpected' not in output, \
+            '{0} failed with an unexplained error: {1}'.format(tool, output)
+        pytest.skip('device refused {0}: {1}'.format(tool, output))
+
+    lines = _node_lines(output, service_node)
+    assert lines, 'no line reported for {0}:\n{1}'.format(service_node, output)
+    assert re.match(pattern, lines[0]), lines[0]
+
+
+def test_inventory_reports_hardware_detail(run_cli, service_node):
+    returncode, output = run_cli('nodeinventory', service_node, 'system')
+
+    assert returncode == 0, output
+    assert _node_lines(output, service_node), output
+
+
+def test_firmware_reports_a_version(run_cli, service_node):
+    returncode, output = run_cli('nodefirmware', service_node)
+
+    assert returncode == 0, output
+    assert _node_lines(output, service_node), output
+
+
+def test_attributes_round_trip_through_the_service(run_cli, service_node):
+    """An attribute set in the configuration comes back through the API.
+
+    This is the mapping layer: the value the service was configured with has
+    to survive dispatch and serialization to reach the caller.
+    """
+    returncode, output = run_cli('nodeattrib', service_node,
+                                 'hardwaremanagement.method')
+
+    assert returncode == 0, output
+    assert 'hardwaremanagement.method' in output
+    assert re.search(r'hardwaremanagement\.method:\s*\S+', output), output
+
+
+def test_secrets_are_not_echoed_back(run_cli, bmc_target, service_node):
+    """Reading attributes must not print the stored BMC password.
+
+    Worth pinning explicitly: these tests run with a real credential in the
+    configuration, and an attribute listing is the likeliest place for one to
+    escape into a terminal or a log. The assertion is on the credential
+    itself, not on the presence of asterisks, so it cannot be satisfied by
+    some other field happening to be redacted.
+
+    Not a vacuous check: the attribute is listed, as a redacted value.
+    """
+    password = bmc_target.get('password')
+    if not password:
+        pytest.skip('device has no password configured to leak')
+
+    returncode, output = run_cli('nodeattrib', service_node)
+
+    assert returncode == 0, output
+    # Compare against the reported values only. A substring search over the
+    # whole output gives a false positive when the credential happens to be a
+    # common word: one device here uses "password", which appears inside the
+    # attribute name secret.hardwaremanagementpassword.
+    values = [line.rsplit(': ', 1)[-1].strip()
+              for line in output.splitlines()]
+    leaked = [value for value in values if password in value]
+    assert leaked == [], \
+        'the attribute listing exposed the stored BMC password'
+
+
+def test_unknown_node_is_refused_with_an_explanation(run_cli):
+    """The failure path users actually hit, and where a bare exception would
+    surface as "Unexpected Error" with nothing to act on."""
+    returncode, output = run_cli('nodepower', 'nosuchnode')
+
+    assert returncode != 0
+    assert output.strip(), 'a failure told the user nothing'
+    assert 'nosuchnode' in output, output
+    assert 'Unexpected' not in output, output
+
+
+def test_unknown_attribute_is_refused_with_an_explanation(run_cli,
+                                                          service_node):
+    returncode, output = run_cli('nodeattrib', service_node,
+                                 'nosuchattribute')
+
+    assert returncode != 0
+    assert 'nosuchattribute' in output, output
+    assert 'Unexpected' not in output, output

@@ -9,7 +9,11 @@ import asyncio
 import configparser
 import functools
 import gc
+import json
 import os
+import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -430,6 +434,109 @@ def ipmi_bmc():
 def smm():
     """Address of an SMM to test against, or skip."""
     return _hardware_target('CONFLUENT_TEST_SMM')
+
+
+def _service_nodes():
+    """The inventory as confluent node definitions, keyed by device name."""
+    nodes = {}
+    for kind in ('redfish', 'ipmi'):
+        for target in _targets(kind):
+            nodes[str(target.get('name', target['address']))] = {
+                'hardwaremanagement.manager': target['address'],
+                'hardwaremanagement.method': kind,
+                'secret.hardwaremanagementuser': target['user'],
+                'secret.hardwaremanagementpassword': target.get('password'),
+            }
+    return nodes
+
+
+@pytest.fixture(scope='session')
+def confluent_service(tmp_path_factory):
+    """A confluent service on a temp socket, with the inventory as its nodes.
+
+    Started as a subprocess rather than in this one. A service here would
+    share configmanager's module globals with the fixtures that reset them
+    between tests, and its socket would have to live in whichever event loop
+    happened to be current. A separate process shares nothing, needs no loop
+    scope juggling, and is closer to how confluent actually runs.
+
+    No privileges are needed. The socket is trusted by peer uid: sockapi
+    grants a connection from the uid the service runs as, which is the same
+    user running the tests, so no password, PAM or certificate is involved.
+
+    Yields the socket path, or skips when no device is configured.
+    """
+    nodes = _service_nodes()
+    if not nodes:
+        pytest.skip('no device configured: nothing for a service to manage')
+
+    socketpath = str(tmp_path_factory.mktemp('service') / 'api.sock')
+    support = pathlib.Path(__file__).parent / 'support' / 'confluentservice.py'
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(
+        str(pathlib.Path(__file__).parents[1] / component)
+        for component in ('confluent_server', 'confluent_client'))
+
+    service = subprocess.Popen(
+        [sys.executable, str(support), socketpath, json.dumps(nodes)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+    try:
+        deadline = 60
+        while deadline > 0:
+            if service.poll() is not None:
+                pytest.fail('service exited during startup:\n{0}'.format(
+                    service.stdout.read()))
+            line = service.stdout.readline()
+            if line.strip() == 'READY':
+                break
+            deadline -= 1
+        else:
+            pytest.fail('service never reported ready')
+        yield socketpath
+    finally:
+        service.terminate()
+        try:
+            service.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            service.kill()
+            service.wait(timeout=10)
+        service.stdout.close()
+
+
+@pytest.fixture
+def service_node(bmc_target):
+    """The name the test service knows this device by.
+
+    Derived from bmc_target so the CLI tests inherit the same parametrization,
+    xdist grouping and per-device safety ceiling as everything else.
+    """
+    return str(bmc_target.get('name', bmc_target['address']))
+
+
+@pytest.fixture
+def run_cli(confluent_service):
+    """Run a confluent CLI tool against the test service.
+
+    Returns (returncode, output). The tools are invoked as subprocesses from
+    the source tree, so argument parsing, the socket protocol and output
+    formatting are all the real ones rather than something reassembled.
+    """
+    root = pathlib.Path(__file__).parents[1]
+    env = dict(os.environ)
+    env['CONFLUENT_HOST'] = confluent_service
+    env['PYTHONPATH'] = os.pathsep.join(
+        str(root / component)
+        for component in ('confluent_server', 'confluent_client'))
+
+    def invoke(tool, *arguments, timeout=120):
+        completed = subprocess.run(
+            [sys.executable, str(root / 'confluent_client' / 'bin' / tool)]
+            + [str(argument) for argument in arguments],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=env, text=True, timeout=timeout)
+        return completed.returncode, completed.stdout.strip()
+
+    return invoke
 
 
 @pytest.fixture

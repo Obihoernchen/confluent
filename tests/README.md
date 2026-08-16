@@ -178,6 +178,30 @@ Tests run once per matching device and the test ID names the machine, so a failu
 The single `CONFLUENT_TEST_REDFISH_BMC` / `_USER` / `_PASSWORD` variables still work for a quick one-off and are
 treated as one more target, with `CONFLUENT_TEST_REDFISH_ALLOW` as their ceiling.
 
+### Testing through the CLI
+
+`tests/hardware/test_cli_readonly.py` runs the actual `node*` commands against a real device. Each one reaches
+the BMC through argument parsing, the socket protocol, a confluent service, resource dispatch, a hardware
+management plugin and the protocol library, so everything below is exercised as a side effect of asserting on what
+the user is shown. That is the layer where a good answer turns into "Unexpected Error", and no lower test sees it.
+
+The `confluent_service` fixture starts a service on a temp socket with the inventory as its nodes, and `run_cli`
+invokes the tools from the source tree against it. Two things make this cheap:
+
+- **No privileges.** `sockapi` grants a connection whose peer uid matches the uid the service runs as, so no
+  password, PAM or certificate is involved. That is also why this tier avoids the process pool the HTTP path needs
+  for authentication.
+- **A separate process.** A service in the test process would share configmanager's module globals with the
+  fixtures that reset them between tests, and its socket would have to live in whichever event loop happened to be
+  current. A subprocess shares nothing, needs no loop scope juggling, and is closer to how confluent runs.
+
+`tests/support/confluentservice.py` is that subprocess. It is not a test module.
+
+Assertions are about output shape rather than values, since power state, firmware versions and inventory differ
+per machine. A device may refuse a command it does not support, provided it explains itself: an unsupported
+identify light is a skip, an unexplained failure is a failure. That is the same contract the protocol-level sweep
+applies one layer down.
+
 ### Running in parallel
 
 Hardware tests are almost entirely network wait, so they parallelise well: three BMCs took 22.9s sequentially and
