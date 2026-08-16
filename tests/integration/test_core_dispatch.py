@@ -137,20 +137,26 @@ async def test_unknown_element_is_rejected(configmanager, pluginmap):
                                configmanager)
 
 
-async def test_pluginmap_fixture_restores_state(configmanager, pluginmap):
-    """The fixture must leave core.pluginmap and core.noderesources as it found
-    them, or tests would contaminate each other through module globals."""
+async def test_pluginmap_fixture_accepts_stub_registrations(configmanager,
+                                                            pluginmap):
+    """Both the plugin map and the route tree are writable through the
+    fixture, which is what every test above relies on."""
     pluginmap['teststub'] = _stub_plugin('stub')
     core.noderesources['_teststate'] = core.PluginRoute({'handler': 'teststub'})
 
     assert 'teststub' in core.pluginmap
     assert '_teststate' in core.noderesources
-    # Restoration itself is asserted by test_dispatch_isolation below, which
-    # runs against a fresh fixture instance.
 
 
-async def test_dispatch_isolation(configmanager, pluginmap):
-    """Nothing from the preceding tests leaks into this one."""
+async def test_dispatch_starts_from_a_clean_slate(configmanager, pluginmap):
+    """The fixture hands over an empty plugin map and a freshly built route
+    tree, so nothing registered above is visible here.
+
+    Note this cannot detect a broken teardown: the fixture clears the same
+    state during setup, so these assertions hold whether or not restoration
+    happens. Restoration is checked by tests/unit/test_fixture_isolation.py,
+    which inspects the globals from outside the fixture.
+    """
     assert '_teststate' not in core.noderesources
     assert '_testbackend' not in core.noderesources
     assert core.pluginmap == {}

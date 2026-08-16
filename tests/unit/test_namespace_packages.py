@@ -34,8 +34,13 @@ CLIENT_MODULES_THE_SERVER_NEEDS = (
 
 
 def _module_names(pkgdir):
-    return {path.relative_to(pkgdir).as_posix()
-            for path in pkgdir.rglob('*.py')}
+    # A misresolved REPO_ROOT would make rglob return nothing, and every check
+    # built on it would pass while examining nothing at all.
+    assert pkgdir.is_dir(), '{0} is not a directory: REPO_ROOT misresolved'.format(pkgdir)
+    names = {path.relative_to(pkgdir).as_posix()
+             for path in pkgdir.rglob('*.py')}
+    assert names, 'no modules found under {0}'.format(pkgdir)
+    return names
 
 
 def test_the_two_confluent_trees_share_no_module_names():
@@ -48,6 +53,9 @@ def test_the_two_confluent_trees_share_no_module_names():
 def test_neither_package_root_has_an_init():
     """An __init__.py in either root would end the namespace merge and make
     whichever tree came first on sys.path the only importable one."""
+    # exists() is False for a missing directory too, so check the roots first
+    # rather than passing because nothing is there to look at.
+    assert SERVER_PKG.is_dir() and CLIENT_PKG.is_dir(), 'REPO_ROOT misresolved'
     assert not (SERVER_PKG / '__init__.py').exists()
     assert not (CLIENT_PKG / '__init__.py').exists()
 

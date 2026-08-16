@@ -63,6 +63,54 @@ The marker is a coarse gate that keeps a default run away from hardware entirely
 `redfish_bmc`, `ipmi_bmc` and `smm` fixtures: each skips on its own variable, so naming one BMC does not enable
 tests for equipment that is not attached.
 
+### Testing several devices at once
+
+Point `CONFLUENT_TEST_HARDWARE` at a YAML inventory, kept outside the repository:
+
+```yaml
+redfish:
+  - name: xcc-lab1
+    address: 192.0.2.10       # a :port is allowed, for a BMC behind a tunnel
+    user: admin
+    password: ...
+  - name: openbmc-lab1
+    address: 127.0.0.1:9999
+    user: root
+    password: ...
+```
+
+Tests requesting `redfish_command` then run once per device, and the test ID names the machine, so a failure reads
+`test_boot_device_is_reported[openbmc-artemis]`. The top level is keyed by kind, leaving room for `ipmi`, `smm` and
+`pdu` sections beside `redfish`. Credentials in a file also stay out of the command line, where `ps` would expose
+them to any local user for the length of the run.
+
+The single `CONFLUENT_TEST_REDFISH_BMC` / `_USER` / `_PASSWORD` variables still work for a quick one-off and are
+treated as one more target.
+
+### Running in parallel
+
+Hardware tests are almost entirely network wait, so they parallelise well: three BMCs took 22.9s sequentially and
+14.5s with `-n 3`, which is the slowest single device rather than the sum.
+
+```sh
+python3 -m pytest -m hardware -n 3
+```
+
+Size `-n` by the number of devices, not by CPU count. `--dist loadgroup` is already in `addopts` and is inert
+without `-n`, so this needs no other flags.
+
+**The unit of parallelism is the device, not the test.** Each target gets its own `xdist_group`, so every test for
+one machine lands on one worker. That keeps concurrent load on a controller to what a single client would produce,
+avoids multiplying Redfish sessions that aiohmi never closes, and is the same mechanism that will give a future OS
+deployment test exclusive use of a node.
+
+Do not use the default `--dist load`. It splits files across workers, and `tests/unit/test_fixture_isolation.py`
+depends on its tests running together and in order: distributed, its checks run where nothing was ever dirtied and
+pass while proving nothing. That file carries an `xdist_group` for the same reason.
+
+Long-running tests need their own `@pytest.mark.timeout(...)`: `addopts` sets a 60 second limit that an OS
+deployment would blow straight through.
+
 `--strict-markers` is on, so a typo in a marker name is an error rather than a silently skipped selection.
 
 ## Fixtures
@@ -88,6 +136,11 @@ All in `conftest.py`.
   earlier test happened to evaluate a matching range.
 - **`redfish_bmc`, `ipmi_bmc`, `smm`** return the address of a specific piece of test equipment, or skip when its
   variable is unset.
+- **`redfish_command`** returns a connected aiohmi Redfish client, and additionally needs
+  `CONFLUENT_TEST_REDFISH_USER` and `CONFLUENT_TEST_REDFISH_PASSWORD`. Credentials come from the environment only
+  and must never be committed. Do not run the hardware tier with `--showlocals`, which would print the password
+  into a failure report. Certificates are accepted unverified, so these tests confirm the BMC answers, not that it
+  is the BMC you meant.
 
 Both the `configmanager` and `pluginmap` fixtures work by patching module globals, because that is how the code
 under test stores its state. Restoration is therefore a correctness property of the suite, not a nicety: a leak
@@ -108,7 +161,10 @@ The codebase is asyncio throughout and plugin dispatch is built on async generat
 - **A forgotten `await` fails the run.** `pytest.ini` turns "coroutine ... was never awaited" into an error. This is
   the single most likely regression in a codebase with this many await sites.
 - Asyncio debug mode is on for the whole session, which reports slow callbacks and exceptions never retrieved from
-  a task.
+  a task. It is switched off when a hardware target is configured: aiohttp derives its own `DEBUG` from
+  `PYTHONASYNCIODEBUG` and builds its response parser with `lax=not DEBUG`, and strict parsing rejects repeated
+  singleton headers that real BMCs send. Production runs without the variable, so leaving it on would fail hardware
+  tests for a defect that does not exist.
 
 Existing `unittest.TestCase` and `IsolatedAsyncioTestCase` classes run under pytest unchanged. New tests should be
 plain functions with fixtures, but there is no need to rewrite a working test class just to move it here.

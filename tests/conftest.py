@@ -6,6 +6,7 @@ tests/README.md for the conventions.
 """
 
 import configparser
+import functools
 import gc
 import os
 
@@ -18,8 +19,22 @@ import pytest
 # and smm fixtures, so that naming one BMC does not enable tests for equipment
 # that is not present.
 _HARDWARE_ENV = ('CONFLUENT_TEST_REDFISH_BMC', 'CONFLUENT_TEST_IPMI_BMC',
-                 'CONFLUENT_TEST_SMM')
+                 'CONFLUENT_TEST_SMM', 'CONFLUENT_TEST_HARDWARE')
 _LAB_ENV = ('CONFLUENT_TEST_LAB',)
+
+# Path to a YAML inventory of test equipment, so more than one device can be
+# exercised in a run and credentials stay off the command line, where ps would
+# expose them. Top level is keyed by kind, which leaves room for ipmi, smm and
+# pdu sections beside redfish:
+#
+#   redfish:
+#     - name: xcc-lab1
+#       address: 192.0.2.10       # :port permitted
+#       user: admin
+#       password: ...
+#
+# Keep the file outside the repository.
+_INVENTORY_ENV = 'CONFLUENT_TEST_HARDWARE'
 
 # Module-level state in configmanager that a test can reasonably disturb. The
 # datastore is a module global rather than instance state, so fixtures have to
@@ -54,7 +69,18 @@ def pytest_configure(config):
     # runs is enough. Debug mode reports slow callbacks, coroutines that were
     # never scheduled and exceptions never retrieved from a task, all of which
     # are realistic failure modes in the console and plugin dispatch paths.
-    os.environ.setdefault('PYTHONASYNCIODEBUG', '1')
+    #
+    # It is deliberately not set when a hardware target is configured. aiohttp
+    # derives its own DEBUG flag from this same variable (aiohttp.helpers) and
+    # uses it to build its response parser with lax=not DEBUG. Strict parsing
+    # rejects a repeated singleton header, and real BMCs send them: an OpenBMC
+    # tested here returns ETag twice on the Redfish service root, which strict
+    # aiohttp turns into "400, Duplicate 'Etag' header found." Production
+    # confluent runs without this variable and accepts the response, so
+    # leaving debug on would fail hardware tests for a defect that does not
+    # exist. Note "0" would not help: the check is bool() of the string.
+    if not any(os.environ.get(name) for name in _HARDWARE_ENV):
+        os.environ.setdefault('PYTHONASYNCIODEBUG', '1')
 
     # confluent.messages reads /etc/confluent/service.cfg at import time (it
     # calls cfgfile.get_option at module scope), so neutralize the config
@@ -133,10 +159,127 @@ def _hardware_target(varname):
     return value
 
 
+@functools.lru_cache(maxsize=None)
+def _inventory():
+    """The parsed equipment inventory, or an empty one."""
+    path = os.environ.get(_INVENTORY_ENV)
+    if not path:
+        return {}
+    # Imported here rather than at module scope so the rest of the suite does
+    # not gain a hard dependency on PyYAML just to collect.
+    import yaml
+
+    with open(path) as invfile:
+        return yaml.safe_load(invfile) or {}
+
+
+def _targets(kind):
+    """Every configured device of one kind, newest-style inventory first.
+
+    The single-device CONFLUENT_TEST_* variables still work and are appended
+    as one more target, so a quick one-off run needs no file.
+    """
+    targets = []
+    for entry in _inventory().get(kind, []):
+        if entry.get('address') and entry.get('user'):
+            targets.append(entry)
+    if kind == 'redfish':
+        address = os.environ.get('CONFLUENT_TEST_REDFISH_BMC')
+        user = os.environ.get('CONFLUENT_TEST_REDFISH_USER')
+        password = os.environ.get('CONFLUENT_TEST_REDFISH_PASSWORD')
+        if address and user:
+            targets.append({'name': address, 'address': address,
+                            'user': user, 'password': password})
+    return targets
+
+
+def _parametrize_targets(metafunc, kind, argname):
+    """Run the test once per configured device.
+
+    Each device gets its own xdist_group, so with -n and --dist loadgroup all
+    the tests for one machine land on one worker. That keeps concurrent load
+    on a given controller to what a single client would produce, and it is the
+    same mechanism that will give an OS deployment test exclusive use of a
+    node.
+    """
+    targets = _targets(kind)
+    if not targets:
+        metafunc.parametrize(argname, [pytest.param(
+            None, id='none-configured',
+            marks=pytest.mark.skip(
+                reason='no {0} target: set {1} or the CONFLUENT_TEST_* '
+                       'variables'.format(kind, _INVENTORY_ENV)))])
+        return
+    metafunc.parametrize(argname, [
+        pytest.param(target,
+                     id=str(target.get('name', target['address'])),
+                     marks=pytest.mark.xdist_group(
+                         str(target.get('name', target['address']))))
+        for target in targets])
+
+
+def pytest_generate_tests(metafunc):
+    if 'redfish_target' in metafunc.fixturenames:
+        _parametrize_targets(metafunc, 'redfish', 'redfish_target')
+
+
+def _split_port(address, default=443):
+    """Split an optional :port off a target address.
+
+    BMCs reached through a tunnel or a virtual Redfish service often listen
+    somewhere other than 443, so the address variables accept host:port.
+    Bracketed IPv6 is honoured, and a bare IPv6 literal is left alone rather
+    than having its last group mistaken for a port.
+    """
+    if address.startswith('['):
+        host, _, rest = address.partition(']')
+        if rest.startswith(':'):
+            return host[1:], int(rest[1:])
+        return host[1:], default
+    host, sep, port = address.rpartition(':')
+    if sep and port.isdigit() and ':' not in host:
+        return host, int(port)
+    return address, default
+
+
 @pytest.fixture
 def redfish_bmc():
     """Address of a Redfish BMC to test against, or skip."""
     return _hardware_target('CONFLUENT_TEST_REDFISH_BMC')
+
+
+@pytest.fixture
+async def redfish_command(redfish_target):
+    """A connected aiohmi Redfish client, one per configured BMC.
+
+    Tests requesting this run once per device in the inventory, so a failure
+    names the machine it came from. Addresses may carry a :port for a BMC
+    reached through a tunnel.
+
+    Credentials come from the inventory file or the environment and are never
+    stored in the repository. Do not run this tier with --showlocals, which
+    would print the password into a failure report.
+
+    Building the client is itself a substantial read-only check: it fetches
+    the service root, opens a session, selects an OEM handler and resolves the
+    default system and manager URLs.
+
+    The certificate is accepted unverified, since BMCs ship self-signed certs.
+    That means these tests confirm the BMC answers, not that it is the BMC you
+    think it is. Anything relying on identity needs a pinned fingerprint, the
+    way confluent itself does it.
+
+    aiohmi has no Redfish logout, so each test leaves a session behind. BMC
+    session timeouts are short (300s on the XCC this was written against), so
+    this is self-correcting, but keep the tier small rather than opening one
+    session per assertion.
+    """
+    from aiohmi.redfish.command import Command
+
+    host, port = _split_port(redfish_target['address'])
+    return await Command.create(host, redfish_target['user'],
+                                redfish_target.get('password'),
+                                verifycallback=lambda cert: True, port=port)
 
 
 @pytest.fixture
@@ -171,16 +314,19 @@ def confluent_cfgdir(tmp_path):
                    for name in _CFM_CLASS_MUTABLES}
     saved_cfgdir = cfm.ConfigManager._cfgdir
 
-    for name in _CFM_MUTABLE_GLOBALS:
-        setattr(cfm, name, {})
-    for name in _CFM_CLASS_MUTABLES:
-        setattr(cfm.ConfigManager, name, {})
-
-    cfm.ConfigManager._cfgdir = str(cfgdir)
-    cfm.statelessmode = True
-    cfm._cfgstore = None
-    cfm.init(stateless=True)
+    # Everything after the snapshot runs inside the try, so a failure during
+    # setup still restores. Otherwise an exception here would leave every
+    # later test in the session running against corrupted globals.
     try:
+        for name in _CFM_MUTABLE_GLOBALS:
+            setattr(cfm, name, {})
+        for name in _CFM_CLASS_MUTABLES:
+            setattr(cfm.ConfigManager, name, {})
+
+        cfm.ConfigManager._cfgdir = str(cfgdir)
+        cfm.statelessmode = True
+        cfm._cfgstore = None
+        cfm.init(stateless=True)
         yield cfgdir
     finally:
         cfm.ConfigManager._cfgdir = saved_cfgdir
@@ -224,9 +370,12 @@ def pluginmap():
     saved_resources = {name: getattr(core, name, _UNSET)
                        for name in ('noderesources', 'nodegroupresources')}
 
-    core._init_core()
-    core.pluginmap.clear()
+    # Inside the try for the same reason as confluent_cfgdir: _init_core()
+    # imports confluent.shellserver, which can fail on an environment missing
+    # a dependency, and an unrestored resource tree would corrupt the session.
     try:
+        core._init_core()
+        core.pluginmap.clear()
         yield core.pluginmap
     finally:
         core.pluginmap.clear()

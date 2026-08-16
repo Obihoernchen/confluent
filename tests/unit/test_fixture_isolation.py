@@ -20,9 +20,18 @@ if test order is ever randomized, rewrite this using the pytester fixture to
 run a nested session instead.
 """
 
+import pytest
+
 from confluent import core
 from confluent import noderange
 from confluent.config import configmanager as cfm
+
+
+# These tests only mean anything together and in order: one dirties state and
+# the rest check it was restored. Under -n the default distribution would put
+# them on different workers, where nothing was ever dirtied and every check
+# passes vacuously. The group keeps them on one worker.
+pytestmark = pytest.mark.xdist_group('fixture-isolation')
 
 
 BASELINE = {
