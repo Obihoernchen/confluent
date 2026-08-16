@@ -33,7 +33,9 @@ vendor rather than an assumption about what the address points at.
 
 import pytest
 
-pytestmark = pytest.mark.hardware
+# Every hardware test must declare what it may do to the device, and the run
+# refuses to collect if one does not. Nothing in this file sends a write.
+pytestmark = [pytest.mark.hardware, pytest.mark.readonly]
 
 
 async def test_power_state_is_reported(redfish_command):

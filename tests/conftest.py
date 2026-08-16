@@ -37,6 +37,33 @@ _LAB_ENV = ('CONFLUENT_TEST_LAB',)
 # Keep the file outside the repository.
 _INVENTORY_ENV = 'CONFLUENT_TEST_HARDWARE'
 
+# What a test is allowed to do to a device, in increasing order of risk. Each
+# level includes everything below it.
+#
+#   readonly     sends no writes at all
+#   reversible   writes, but restores the prior state; no service interruption
+#   disruptive   interrupts service, but the device recovers on its own
+#   destructive  may need a human afterwards, or risks data loss
+#
+# The split between the last two is deliberate: a power cycle and a firmware
+# flash are not the same event, and a shared machine may reasonably permit the
+# first while forbidding the second.
+_SAFETY_LEVELS = ('readonly', 'reversible', 'disruptive', 'destructive')
+
+# Inventory sections are named after confluent's own hardwaremanagement.method
+# values, so the file uses vocabulary that already exists rather than a second
+# taxonomy. Fixtures aggregate them into roles: a test that works against any
+# BMC asks for bmc_target, one that needs Redfish asks for redfish_target.
+_TARGET_FIXTURES = {
+    'redfish_target': ('redfish',),
+    'ipmi_target': ('ipmi',),
+    'bmc_target': ('redfish', 'ipmi'),
+    'chassis_target': ('enclosure',),
+    'cdu_target': ('cooltera',),
+    'pdu_target': ('deltapdu', 'eatonpdu', 'enlogic', 'geist', 'raritan'),
+    'switch_target': ('cnos', 'enos', 'nxos', 'srlinux'),
+}
+
 # Module-level state in configmanager that a test can reasonably disturb. The
 # datastore is a module global rather than instance state, so fixtures have to
 # snapshot and restore it or tests leak into each other.
@@ -65,6 +92,37 @@ _CFM_CLASS_MUTABLES = ('_attribwatchers', '_nodecollwatchers', '_notifierids')
 _UNSET = object()
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        '--hw-level', default='readonly', choices=_SAFETY_LEVELS,
+        help='Most that any test may do to a device this run (default: '
+             'readonly). A device also carries its own ceiling in the '
+             'inventory, and the lower of the two applies.')
+
+
+def _level_index(level):
+    return _SAFETY_LEVELS.index(level)
+
+
+def _device_ceiling(item):
+    """The allow: of whichever device this test was parametrized over."""
+    callspec = getattr(item, 'callspec', None)
+    if callspec is None:
+        return None
+    for value in callspec.params.values():
+        if isinstance(value, dict) and 'address' in value:
+            return value.get('allow', _SAFETY_LEVELS[0])
+    return None
+
+
+def _safety_level(item):
+    """The one safety marker on a test, or None if that is not the case."""
+    declared = [name for name in _SAFETY_LEVELS if name in item.keywords]
+    if len(declared) != 1:
+        return None
+    return declared[0]
+
+
 def pytest_configure(config):
     # confluent.messages reads /etc/confluent/service.cfg at import time (it
     # calls cfgfile.get_option at module scope), so neutralize the config
@@ -81,11 +139,44 @@ def pytest_collection_modifyitems(config, items):
         reason='needs hardware, set one of: ' + ', '.join(_HARDWARE_ENV))
     skip_lab = pytest.mark.skip(
         reason='needs the deployment lab, set ' + _LAB_ENV[0])
+
+    # A hardware test that does not say what it may do is refused outright
+    # rather than given a default. The failure this guards against is a
+    # destructive test with a forgotten marker inheriting something permissive
+    # and running when it should not, which is not a thing to discover from
+    # the state of the machine afterwards.
+    undeclared = sorted({item.nodeid.split('[')[0] for item in items
+                         if 'hardware' in item.keywords
+                         and _safety_level(item) is None})
+    if undeclared:
+        raise pytest.UsageError(
+            'hardware tests must carry exactly one of {0}:\n  {1}'.format(
+                ', '.join(_SAFETY_LEVELS), '\n  '.join(undeclared)))
+
+    run_ceiling = config.getoption('hw_level')
     for item in items:
         if 'hardware' in item.keywords and not hardware_ready:
             item.add_marker(skip_hardware)
         if 'lab' in item.keywords and not lab_ready:
             item.add_marker(skip_lab)
+        if 'hardware' not in item.keywords:
+            continue
+
+        # The device ceiling and the run ceiling both apply, and the lower
+        # wins. "In use right now" is a property of the machine, not of the
+        # run, so a device must stay protected even when the command line asks
+        # for more.
+        level = _safety_level(item)
+        device_ceiling = _device_ceiling(item)
+        if _level_index(level) > _level_index(run_ceiling):
+            item.add_marker(pytest.mark.skip(
+                reason='{0} test, run allows up to {1}: raise '
+                       '--hw-level'.format(level, run_ceiling)))
+        elif (device_ceiling is not None
+                and _level_index(level) > _level_index(device_ceiling)):
+            item.add_marker(pytest.mark.skip(
+                reason='{0} test, device allows up to {1}: raise allow: in '
+                       'the inventory'.format(level, device_ceiling)))
 
 
 @pytest.fixture(autouse=True)
@@ -184,26 +275,43 @@ def _inventory():
 
 
 def _targets(kind):
-    """Every configured device of one kind, newest-style inventory first.
+    """Every configured device of one kind, inventory first.
 
+    Entries inherit from a top-level defaults: mapping, and carry the method
+    they were listed under so a fixture serving several methods can dispatch.
     The single-device CONFLUENT_TEST_* variables still work and are appended
     as one more target, so a quick one-off run needs no file.
     """
+    inventory = _inventory()
+    defaults = inventory.get('defaults') or {}
     targets = []
-    for entry in _inventory().get(kind, []):
-        if entry.get('address') and entry.get('user'):
-            targets.append(entry)
+    for entry in inventory.get(kind) or []:
+        merged = dict(defaults)
+        merged.update(entry)
+        merged['method'] = kind
+        allow = merged.setdefault('allow', _SAFETY_LEVELS[0])
+        if allow not in _SAFETY_LEVELS:
+            raise pytest.UsageError(
+                "inventory device {0!r} has allow: {1!r}, expected one of "
+                "{2}".format(merged.get('name', merged.get('address')), allow,
+                             ', '.join(_SAFETY_LEVELS)))
+        if merged.get('address') and merged.get('user'):
+            targets.append(merged)
     if kind == 'redfish':
         address = os.environ.get('CONFLUENT_TEST_REDFISH_BMC')
         user = os.environ.get('CONFLUENT_TEST_REDFISH_USER')
         password = os.environ.get('CONFLUENT_TEST_REDFISH_PASSWORD')
         if address and user:
             targets.append({'name': address, 'address': address,
-                            'user': user, 'password': password})
+                            'user': user, 'password': password,
+                            'method': 'redfish',
+                            'allow': os.environ.get(
+                                'CONFLUENT_TEST_REDFISH_ALLOW',
+                                _SAFETY_LEVELS[0])})
     return targets
 
 
-def _parametrize_targets(metafunc, kind, argname):
+def _parametrize_targets(metafunc, kinds, argname):
     """Run the test once per configured device.
 
     Each device gets its own xdist_group, so with -n and --dist loadgroup all
@@ -212,13 +320,17 @@ def _parametrize_targets(metafunc, kind, argname):
     same mechanism that will give an OS deployment test exclusive use of a
     node.
     """
-    targets = _targets(kind)
+    targets = []
+    for kind in kinds:
+        targets.extend(_targets(kind))
     if not targets:
         metafunc.parametrize(argname, [pytest.param(
             None, id='none-configured',
             marks=pytest.mark.skip(
-                reason='no {0} target: set {1} or the CONFLUENT_TEST_* '
-                       'variables'.format(kind, _INVENTORY_ENV)))])
+                reason='no {0} device configured: add one under {1} in the '
+                       'inventory named by {2}'.format(
+                           ' or '.join(kinds), '/'.join(kinds),
+                           _INVENTORY_ENV)))])
         return
     metafunc.parametrize(argname, [
         pytest.param(target,
@@ -229,8 +341,9 @@ def _parametrize_targets(metafunc, kind, argname):
 
 
 def pytest_generate_tests(metafunc):
-    if 'redfish_target' in metafunc.fixturenames:
-        _parametrize_targets(metafunc, 'redfish', 'redfish_target')
+    for argname, kinds in _TARGET_FIXTURES.items():
+        if argname in metafunc.fixturenames:
+            _parametrize_targets(metafunc, kinds, argname)
 
 
 def _split_port(address, default=443):

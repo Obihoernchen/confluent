@@ -52,9 +52,10 @@ alongside the two `confluent` namespace packages.
 |---|---|---|
 | *(none)* | pure unit test, always runs | |
 | `integration` | temp datastore, sockets, subprocesses | always runs |
-| `hardware` | real BMC or running daemon | set `CONFLUENT_TEST_REDFISH_BMC`, `CONFLUENT_TEST_IPMI_BMC` |
-| | | or `CONFLUENT_TEST_SMM` |
+| `hardware` | real BMC or running daemon | set `CONFLUENT_TEST_HARDWARE` or a `CONFLUENT_TEST_*` address |
 | `lab` | a provisioned deployment lab (real PXE/BMC infrastructure) | set `CONFLUENT_TEST_LAB` |
+
+Every `hardware` test additionally carries one **safety level**, described below.
 
 Marked tests are collected and reported as skipped, not deselected, so a run always says what it did not do.
 Use `-m hardware` to select only that tier, which does deselect everything else.
@@ -63,29 +64,96 @@ The marker is a coarse gate that keeps a default run away from hardware entirely
 `redfish_bmc`, `ipmi_bmc` and `smm` fixtures: each skips on its own variable, so naming one BMC does not enable
 tests for equipment that is not attached.
 
-### Testing several devices at once
+### Safety levels
 
-Point `CONFLUENT_TEST_HARDWARE` at a YAML inventory, kept outside the repository:
+Hardware may be in use, so what a test is allowed to do to a device is controlled explicitly. Each level includes
+everything below it:
+
+| level | writes? | interrupts service? | recovery | examples |
+|---|---|---|---|---|
+| `readonly` | no | no | n/a | power state, inventory, sensors, event log |
+| `reversible` | yes | no | the test restores it | create then delete a user, set then restore a boot override |
+| `disruptive` | yes | yes | automatic | power cycle, BMC reset, port flap, outlet cycle |
+| `destructive` | yes | yes | may need a human | firmware flash, factory reset, RAID init, OS deployment |
+
+The split between the last two is deliberate. A power cycle and a firmware flash are not the same event, and a
+shared machine may reasonably permit the first while forbidding the second.
+
+**Two ceilings apply, and the lower one wins:**
+
+- the run, via `--hw-level=<level>`, defaulting to `readonly`
+- the device, via `allow:` in its inventory entry, also defaulting to `readonly`
+
+"In use right now" is a property of the machine rather than of the run, so a device stays protected even when the
+command line asks for more. A skipped test says which of the two gates stopped it.
+
+Every `hardware` test must carry **exactly one** safety marker. A test with none, or with more than one, aborts
+collection rather than being given a default: the failure worth preventing is a destructive test with a forgotten
+marker inheriting something permissive and running when it should not.
+
+A `reversible` test owes the device a restore. Capture the prior state first, restore it in a fixture teardown so
+it happens even when the test fails, and keep an explicit list of calls the test will never make.
+
+### The inventory
+
+Point `CONFLUENT_TEST_HARDWARE` at a YAML file, kept outside the repository and readable only by you:
 
 ```yaml
-redfish:
-  - name: xcc-lab1
-    address: 192.0.2.10       # a :port is allowed, for a BMC behind a tunnel
-    user: admin
+defaults:                      # inherited by every entry below
+  user: admin
+  allow: readonly
+
+redfish:                       # sections are named after
+  - name: xcc-lab1             # hardwaremanagement.method values
+    address: 192.0.2.10        # a :port is allowed, for a BMC behind a tunnel
     password: ...
-  - name: openbmc-lab1
-    address: 127.0.0.1:9999
-    user: root
+    allow: reversible
+
+enclosure:                     # SMM
+  - name: smm-rack4
+    address: 192.0.2.40
     password: ...
+    bays: [1, 2]               # per-kind: bays a test may touch
+
+geist:                         # one of five PDU backends
+  - name: pdu-rack4
+    address: 192.0.2.60
+    password: ...
+    outlets: [7, 8]            # per-kind: outlets a test may cycle
+    allow: disruptive
+
+cnos:                          # one of four switch backends
+  - name: sw-lab1
+    address: 192.0.2.80
+    password: ...
+    ports: [Ethernet1/1]       # per-kind: ports a test may flap
 ```
 
-Tests requesting `redfish_command` then run once per device, and the test ID names the machine, so a failure reads
-`test_boot_device_is_reported[openbmc-artemis]`. The top level is keyed by kind, leaving room for `ipmi`, `smm` and
-`pdu` sections beside `redfish`. Credentials in a file also stay out of the command line, where `ps` would expose
-them to any local user for the length of the run.
+Sections are named after confluent's own `hardwaremanagement.method` values, so the file uses vocabulary that
+already exists rather than a second taxonomy. Recognised sections are `redfish`, `ipmi`, `enclosure`, `cooltera`,
+the PDU backends (`deltapdu`, `eatonpdu`, `enlogic`, `geist`, `raritan`) and the switch backends (`cnos`, `enos`,
+`nxos`, `srlinux`).
+
+Per-kind keys such as `bays`, `outlets` and `ports` are both configuration and fencing: a test may only touch what
+is listed.
+
+Fixtures aggregate methods into roles, so a test asks for the broadest one it genuinely works against:
+
+| fixture | methods |
+|---|---|
+| `redfish_target`, `ipmi_target` | that one method |
+| `bmc_target` | `redfish`, `ipmi` |
+| `chassis_target` | `enclosure` |
+| `cdu_target` | `cooltera` |
+| `pdu_target` | the five PDU backends |
+| `switch_target` | the four switch backends |
+
+Tests run once per matching device and the test ID names the machine, so a failure reads
+`test_boot_device_is_reported[openbmc-artemis]`. Credentials in a file also stay out of the command line, where
+`ps` would expose them to any local user for the length of the run.
 
 The single `CONFLUENT_TEST_REDFISH_BMC` / `_USER` / `_PASSWORD` variables still work for a quick one-off and are
-treated as one more target.
+treated as one more target, with `CONFLUENT_TEST_REDFISH_ALLOW` as their ceiling.
 
 ### Running in parallel
 
