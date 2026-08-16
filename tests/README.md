@@ -86,8 +86,8 @@ and without a second key every later plain `pytest` in that shell would run agai
 |---|---|---|
 | *(none)* | pure unit test, always runs | |
 | `integration` | temp datastore, sockets, subprocesses | always runs |
-| `hardware` | real BMC or running daemon | set `CONFLUENT_TEST_HARDWARE` or a `CONFLUENT_TEST_*` address |
-| `lab` | a provisioned deployment lab (real PXE/BMC infrastructure) | set `CONFLUENT_TEST_LAB` |
+| `hardware` | real BMC or running daemon | `--run-hardware`, plus a device in `CONFLUENT_TEST_HARDWARE` |
+| `lab` | a provisioned deployment lab (real PXE/BMC infrastructure) | `--run-lab` |
 
 Every `hardware` test additionally carries one **safety level**, described below.
 
@@ -189,8 +189,11 @@ Tests run once per matching device and the test ID names the machine, so a failu
 `test_boot_device_is_reported[openbmc-artemis]`. Credentials in a file also stay out of the command line, where
 `ps` would expose them to any local user for the length of the run.
 
-The single `CONFLUENT_TEST_REDFISH_BMC` / `_USER` / `_PASSWORD` variables still work for a quick one-off and are
-treated as one more target, with `CONFLUENT_TEST_REDFISH_ALLOW` as their ceiling.
+**The inventory is the only way to name a device**, and `CONFLUENT_TEST_HARDWARE` is the only variable the suite
+reads. Single-device variables used to stand in for a small inventory, but they put a BMC password in the
+environment, where any local user can read it out of `/proc` and every subprocess the tier starts inherits it. That
+is the same exposure the service's node definitions were moved off the command line to avoid, and a file with mode
+600 does the job without it.
 
 ### Testing through the CLI
 
@@ -380,10 +383,9 @@ All in `conftest.py`.
   `tests/support/mockups`; anything with a separator is a path, so an inventory kept outside the repository can
   point at a capture of a real machine. Whether the bundle is short form is read off the tree rather than
   configured, and the certificate it presents is generated per run rather than committed.
-- **`redfish_command`** returns a connected aiohmi Redfish client, and additionally needs
-  `CONFLUENT_TEST_REDFISH_USER` and `CONFLUENT_TEST_REDFISH_PASSWORD`. Credentials come from the environment only
-  and must never be committed. Do not run the hardware tier with `--showlocals`, which would print the password
-  into a failure report. Certificates are accepted unverified, so these tests confirm the BMC answers, not that it
+- **`redfish_command`** returns a connected aiohmi Redfish client, one per device in the inventory. Credentials
+  come from that file and must never be committed. Do not run the hardware tier with `--showlocals`, which would
+  print the password into a failure report. Certificates are accepted unverified, so these tests confirm the BMC answers, not that it
   is the BMC you meant.
 
   One client is built per device per process, not per test. aiohmi has no Redfish logout, so each client leaves a

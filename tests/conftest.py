@@ -29,10 +29,10 @@ import pytest_asyncio
 
 # The hardware tier is enabled by --run-hardware and nothing else, so that no
 # environment left over in a shell can turn a plain pytest into a run against
-# real machines. The collection hook below is the coarse gate; per-target
-# precision comes from the target fixtures, so naming one BMC does not enable
-# tests for equipment that is not there.
-_LAB_ENV = ('CONFLUENT_TEST_LAB',)
+# real machines, and --run-lab does the same for the deployment lab. The
+# collection hook below is the coarse gate; per-target precision comes from the
+# target fixtures, so naming one BMC does not enable tests for equipment that
+# is not there.
 
 # Path to a YAML inventory of test equipment, so more than one device can be
 # exercised in a run and credentials stay off the command line, where ps would
@@ -140,6 +140,10 @@ def pytest_addoption(parser):
         help='Let the hardware tier run. An inventory alone does not: it says '
              'what the devices are, this says they may be touched.')
     parser.addoption(
+        '--run-lab', action='store_true', default=False,
+        help='Let the deployment lab tier run. Same two-key reasoning as '
+             '--run-hardware: a provisioned lab is not consent to drive it.')
+    parser.addoption(
         '--hw-level', default='readonly', choices=_SAFETY_LEVELS,
         help='Most that any test may do to a device this run (default: '
              'readonly). A device also carries its own ceiling in the '
@@ -203,12 +207,11 @@ def pytest_collection_modifyitems(config, items):
     # turns every later plain pytest in that shell into a run against real
     # machines, and that is not something to find out afterwards.
     hardware_ready = config.getoption('run_hardware')
-    lab_ready = any(os.environ.get(name) for name in _LAB_ENV)
+    lab_ready = config.getoption('run_lab')
     skip_hardware = pytest.mark.skip(
         reason='needs --run-hardware, and a device in the inventory named by '
                + _INVENTORY_ENV)
-    skip_lab = pytest.mark.skip(
-        reason='needs the deployment lab, set ' + _LAB_ENV[0])
+    skip_lab = pytest.mark.skip(reason='needs --run-lab')
 
     # A hardware test that does not say what it may do is refused outright
     # rather than given a default. The failure this guards against is a
@@ -393,8 +396,13 @@ def _targets(kind):
 
     Entries inherit from a top-level defaults: mapping, and carry the method
     they were listed under so a fixture serving several methods can dispatch.
-    The single-device CONFLUENT_TEST_* variables still work and are appended
-    as one more target, so a quick one-off run needs no file.
+
+    The inventory is the only way to name a device. Single-device environment
+    variables used to be appended here as one more target, which put a BMC
+    password in the environment: readable from /proc for any local user, and
+    inherited by every subprocess the tier starts, which is the exposure the
+    node definitions were moved off argv to avoid. A file with mode 600 does
+    the same job without it.
     """
     inventory = _inventory()
     defaults = inventory.get('defaults') or {}
@@ -420,17 +428,6 @@ def _targets(kind):
                     merged.get('name', merged.get('address', '<unnamed>')),
                     kind, ' and '.join(missing)))
         targets.append(merged)
-    if kind == 'redfish':
-        address = os.environ.get('CONFLUENT_TEST_REDFISH_BMC')
-        user = os.environ.get('CONFLUENT_TEST_REDFISH_USER')
-        password = os.environ.get('CONFLUENT_TEST_REDFISH_PASSWORD')
-        if address and user:
-            targets.append({'name': address, 'address': address,
-                            'user': user, 'password': password,
-                            'method': 'redfish',
-                            'allow': os.environ.get(
-                                'CONFLUENT_TEST_REDFISH_ALLOW',
-                                _SAFETY_LEVELS[0])})
     return targets
 
 
