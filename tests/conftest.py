@@ -572,19 +572,20 @@ def ipmi_simulator(tmp_path_factory):
              '-n', '-s', str(state)],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True)
-        started.append(simulator)
-        _wait_for_simulator(simulator, port)
+        running = _Drained(simulator, _SIMULATOR)
+        started.append(running)
+        _wait_for_simulator(running, port)
 
     yield ensure
 
-    for simulator in started:
-        simulator.terminate()
+    for running in started:
+        running.process.terminate()
         try:
-            simulator.wait(timeout=10)
+            running.process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            simulator.kill()
-            simulator.wait(timeout=10)
-        simulator.stdout.close()
+            running.process.kill()
+            running.process.wait(timeout=10)
+        running.close()
 
 
 @functools.lru_cache(maxsize=None)
@@ -761,18 +762,17 @@ def redfish_mockups(tmp_path_factory):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _wait_for_simulator(simulator, port):
+def _wait_for_simulator(running, port):
     """Block until the simulator says it has the channel, or explain why not."""
-    while True:
-        if simulator.poll() is not None:
+    deadline = time.monotonic() + 30
+    while not running.saw(_SIMULATOR_READY):
+        if running.process.poll() is not None:
             pytest.fail('{0} exited during startup:\n{1}'.format(
-                _SIMULATOR, simulator.stdout.read()))
-        line = simulator.stdout.readline()
-        if not line:
-            pytest.fail('{0} stopped talking before it bound port {1}'.format(
-                _SIMULATOR, port))
-        if _SIMULATOR_READY in line:
-            return
+                _SIMULATOR, running.output()))
+        if time.monotonic() > deadline:
+            pytest.fail('{0} never bound port {1}:\n{2}'.format(
+                _SIMULATOR, port, running.output()))
+        time.sleep(0.05)
 
 
 async def _redfish_client(target):
@@ -939,43 +939,85 @@ _SERVICE_COMPLAINTS = (
 )
 
 
-class _Service:
-    """A running test service, and what it has said.
+class _Drained:
+    """A long-running process whose output a thread reads continuously.
 
-    Its output is drained by a thread rather than read on demand. Nothing else
-    reads the pipe once the service is up, and a process whose pipe fills stops
-    dead at the write: tracebacks are exactly what would fill it, so the
-    failure mode without this is the tier hanging precisely when the service
-    has most to report.
+    Nothing else reads these pipes once startup is over, and a process whose
+    pipe fills stops dead at the write. A traceback is exactly what would fill
+    one, so without this the failure mode is a hang arriving precisely when the
+    process has most to report.
     """
 
-    def __init__(self, process, logdirectory):
-        self.socketpath = None
-        self.logdirectory = logdirectory
-        self._process = process
+    def __init__(self, process, what):
+        self.process = process
+        self._what = what
         self._said = []
+        self._failure = None
         self._reader = threading.Thread(target=self._drain, daemon=True)
         self._reader.start()
 
     def _drain(self):
-        for line in self._process.stdout:
-            self._said.append(line)
+        try:
+            for line in self.process.stdout:
+                self._said.append(line)
+        except Exception as caught:
+            # Recorded rather than raised: an exception in a thread is
+            # discarded, and this one has to be answerable for. See check().
+            self._failure = caught
+
+    def check(self):
+        """Refuse to carry on with a reader that has stopped.
+
+        The reader ending while the process runs is not a small problem. It
+        collects nothing further, so every check built on this output keeps
+        reporting a clean process for the rest of the session: a guard that
+        fails silently is worse than no guard, because the run still says yes.
+        """
+        if self.process.poll() is not None or self._reader.is_alive():
+            return
+        pytest.fail(
+            'nothing is reading {0} any more, so nothing it says from here on '
+            'would be seen: {1}'.format(
+                self._what, self._failure or 'the reader ended by itself'))
 
     def saw(self, text):
         return any(text in line for line in self._said)
 
     def mark(self):
-        """Where the output has reached, to compare against later."""
-        return len(self._said), self._tracelog()
+        return len(self._said)
+
+    def since(self, mark):
+        return ''.join(self._said[mark:])
+
+    def output(self):
+        return ''.join(self._said)
+
+    def close(self):
+        self._reader.join(timeout=5)
+        self.process.stdout.close()
+
+
+class _Service(_Drained):
+    """A running test service: what it has said, and what it has logged."""
+
+    def __init__(self, process, logdirectory):
+        super().__init__(process, 'the confluent service')
+        self.socketpath = None
+        self.logdirectory = logdirectory
+
+    def mark(self):
+        """Where the output and the trace log have reached."""
+        return super().mark(), self._tracelog()
 
     def since(self, marker):
         """Everything said, and logged, since a mark."""
-        said = ''.join(self._said[marker[0]:])
+        said = super().since(marker[0])
         logged = self._tracelog()[len(marker[1]):]
-        return '\\n'.join(part for part in (said, logged) if part.strip())
+        return '\n'.join(part for part in (said, logged) if part.strip())
 
     def complaints(self, marker):
         """Whichever complaints turned up since a mark, if any."""
+        self.check()
         fresh = self.since(marker)
         found = [text for text in _SERVICE_COMPLAINTS if text in fresh]
         # A trace log that grew at all counts, whatever it holds: nothing
@@ -984,18 +1026,11 @@ class _Service:
             found.append('an entry in the trace log')
         return found, fresh
 
-    def output(self):
-        return ''.join(self._said)
-
     def _tracelog(self):
         try:
             return (self.logdirectory / 'trace').read_text(errors='replace')
         except OSError:  # not written to yet, which is the healthy case
             return ''
-
-    def close(self):
-        self._reader.join(timeout=5)
-        self._process.stdout.close()
 
 
 def _service_nodes():
@@ -1142,6 +1177,15 @@ def run_cli(confluent_service):
         print('$ {0} {1}\n{2}'.format(
             tool, ' '.join(str(argument) for argument in arguments),
             output or '(no output)'))
+        # Refused here rather than left to each test. A tool that dies with a
+        # traceback exits non-zero and prints something, which is exactly what
+        # a device refusing an operation looks like from the outside, so a
+        # caller checking the return code reads a crash as a polite decline
+        # and skips. The tools are the subject of this tier: a traceback out
+        # of one is never an acceptable answer, whatever the exit code says.
+        if 'Traceback (most recent call last)' in output:
+            pytest.fail('{0} died rather than reporting:\n{1}'.format(
+                tool, output))
         return completed.returncode, output
 
     yield invoke

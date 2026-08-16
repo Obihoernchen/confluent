@@ -222,7 +222,17 @@ is worth more than anywhere else, and both are silent without it.
 
 Draining that output is also what stops the tier hanging. Nothing read the pipe once the service was up, and a
 process whose pipe fills stops dead at the write, so the old failure mode was a hang arriving exactly when the
-service had most to say.
+service had most to say. `ipmi_sim` is drained the same way and for the same reason.
+
+**A traceback from a CLI tool fails the test whatever its exit code says.** A tool that dies exits non-zero and
+prints something, which from the outside is indistinguishable from a device refusing an operation, so a test
+checking the return code reads a crash as a polite decline and skips. `run_cli` refuses one centrally, since the
+tools are the subject of this tier and no test should have to remember.
+
+**A reader thread that stops is itself a failure.** If one dies, it collects nothing further and every check built
+on that output would keep reporting a clean process for the rest of the session. A guard that fails silently is
+worse than none, because the run still says yes, so the checks confirm their own reader is alive before trusting
+what it did not see.
 
 `run_cli` echoes each invocation and its output to the test's own stdout, so a run reads as a transcript of what
 the tools actually printed. pytest captures it: it costs a passing run nothing, appears automatically under
