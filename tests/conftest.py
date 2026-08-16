@@ -923,15 +923,15 @@ def smm():
     return _hardware_target('CONFLUENT_TEST_SMM')
 
 
-# What a running service may say that means it found something. Matched
-# against everything it writes and against its trace log, which is where
-# sockapi and the plugins put a traceback they caught.
+# What a service or a tool may say that means it found something. Matched
+# against everything either writes, and against the service's trace log, which
+# is where sockapi and the plugins put a traceback they caught.
 #
 # Deliberately not here: asyncio's slow callback warning. Debug mode reports
-# every callback over 100ms, and plugin dispatch to a device legitimately
-# takes longer than that, so it says nothing about correctness. It is still
-# shown with the rest of the output when something else fails.
-_SERVICE_COMPLAINTS = (
+# every callback over 100ms, and dispatch to a device legitimately takes longer
+# than that, so it says nothing about correctness. It is still shown with the
+# rest of the output when something else fails.
+_COMPLAINTS = (
     'Traceback (most recent call last)',
     'Task exception was never retrieved',
     'was never awaited',
@@ -1019,7 +1019,7 @@ class _Service(_Drained):
         """Whichever complaints turned up since a mark, if any."""
         self.check()
         fresh = self.since(marker)
-        found = [text for text in _SERVICE_COMPLAINTS if text in fresh]
+        found = [text for text in _COMPLAINTS if text in fresh]
         # A trace log that grew at all counts, whatever it holds: nothing
         # writes to it but a handler reporting something it caught.
         if len(self._tracelog()) > len(marker[1]) and not found:
@@ -1158,6 +1158,15 @@ def run_cli(confluent_service):
     env['PYTHONPATH'] = os.pathsep.join(
         str(root / component)
         for component in ('confluent_server', 'confluent_client'))
+    # Several of the tools run their own event loop through
+    # confluent.asynclient, and without this they are the last thing in the
+    # suite with no asyncio diagnostics at all. The variable is safe to set
+    # here, where the in-process tests must not have it: aiohttp derives its
+    # own DEBUG from it and parses the wire differently, and the tools do not
+    # import aiohttp. Checked rather than assumed. It reaches only these
+    # subprocesses, never the run itself, and "0" would not disable it since
+    # asyncio tests bool() of the string.
+    env['PYTHONASYNCIODEBUG'] = '1'
 
     # Where the service's output had got to before this test ran, so whatever
     # it says next is attributed here rather than to some later test.
@@ -1183,9 +1192,11 @@ def run_cli(confluent_service):
         # caller checking the return code reads a crash as a polite decline
         # and skips. The tools are the subject of this tier: a traceback out
         # of one is never an acceptable answer, whatever the exit code says.
-        if 'Traceback (most recent call last)' in output:
-            pytest.fail('{0} died rather than reporting:\n{1}'.format(
-                tool, output))
+        # The rest of the list is what debug mode below makes visible.
+        found = [text for text in _COMPLAINTS if text in output]
+        if found:
+            pytest.fail('{0} reported {1} rather than answering:\n{2}'.format(
+                tool, ', '.join(found), output))
         return completed.returncode, output
 
     yield invoke

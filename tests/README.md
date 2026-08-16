@@ -227,7 +227,13 @@ service had most to say. `ipmi_sim` is drained the same way and for the same rea
 **A traceback from a CLI tool fails the test whatever its exit code says.** A tool that dies exits non-zero and
 prints something, which from the outside is indistinguishable from a device refusing an operation, so a test
 checking the return code reads a crash as a polite decline and skips. `run_cli` refuses one centrally, since the
-tools are the subject of this tier and no test should have to remember.
+tools are the subject of this tier and no test should have to remember. The same check covers an unawaited
+coroutine and an unretrieved task exception.
+
+The tools run with `PYTHONASYNCIODEBUG` set, since several of them drive their own event loop through
+`confluent.asynclient`. This is the one place that variable is safe: `tests/conftest.py` explains at length why the
+in-process tests must not have it, and the reason is aiohttp, which the client tools do not import. It reaches
+only those subprocesses and never the run itself.
 
 **A reader thread that stops is itself a failure.** If one dies, it collects nothing further and every check built
 on that output would keep reporting a clean process for the rest of the session. A guard that fails silently is
