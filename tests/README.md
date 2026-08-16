@@ -205,19 +205,32 @@ applies one layer down.
 ### Testing without hardware
 
 The tier does not care whether a device is real. Point `CONFLUENT_TEST_HARDWARE` at an inventory describing a
-simulated one and the same tests run, which is what makes this usable where no hardware is attached, continuous
+replayed one and the same tests run, which is what makes this usable where no hardware is attached, continuous
 integration included.
 
-`tests/support/inventory-simulated.yaml` is a worked example against `sushy-tools`, which needs no hypervisor and
-no privileges. Its header carries the emulator configuration and the commands to start it.
+Replay uses a captured mockup rather than a generic emulator, because a capture of a real machine answers what
+that machine answered, vendor extensions included, and so exercises the OEM handler that machine selects. A generic
+emulator only ever reaches the generic path.
 
-A simulator implements less than real firmware, so entries carry a `known_failures` mapping of nodeid substring to
-reason. Those tests still run and report as xfail rather than being skipped or deleted, and one that starts passing
-shows up as an unexpected pass so the entry can be removed.
+`tests/support/capture-mockups.py` captures a device with DMTF's Redfish-Mockup-Creator, and
+`tests/support/sanitize-mockup.py` prunes the specification documents and replaces identifying values. Both carry
+their usage in their docstrings. Serve a capture with DMTF's mockup server:
 
-Keep two kinds of entry apart in that mapping, as the example does. A gap in the simulation is one thing. A
-confluent defect the simulator exposed is another, and should be fixed rather than accumulated: pointing the suite
-at a device publishing a minimal but legal Redfish tree found two on the first run.
+```sh
+podman run -d -p 8451:8000 --security-opt label=disable \
+    -v <mockup>:/mockup:ro -v <certs>:/certs:ro \
+    docker.io/dmtf/redfish-mockup-server:latest \
+    -D /mockup -X -s --cert /certs/cert.pem --key /certs/key.pem
+```
+
+A replayed device answers reads and holds writes in memory, but has no state machine behind an action: a boot
+override can be set and read back, while a reset is accepted and changes nothing. Read-only and reversible
+property tests suit it; power and reset tests do not.
+
+Entries may carry a `known_failures` mapping of nodeid substring to reason, for whatever a given device cannot
+satisfy. Those tests still run and report as xfail rather than being skipped or deleted, so one that starts
+passing shows up as an unexpected pass and the entry can go. Keep two kinds of entry apart: a gap in the replay is
+one thing, and a confluent defect the replay exposed is another that should be fixed rather than accumulated.
 
 ### Running in parallel
 

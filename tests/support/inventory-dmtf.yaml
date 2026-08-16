@@ -1,0 +1,65 @@
+# Inventory for the mockups vendored in tests/support/mockups.
+#
+# These need no hardware and no credentials that matter, so this is the
+# inventory to point continuous integration at:
+#
+#   CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml pytest -m hardware
+#
+# Something has to serve them first. See tests/support/mockups/README.md; each
+# bundle needs its own server instance on the port named below, started with
+# -S because these use the short form layout.
+#
+# The mockups describe fictional hardware, so every entry takes the generic
+# code path. Vendor handlers need a capture of a real machine, which is not
+# something to publish.
+#
+# Reads only. A replayed service holds writes in memory but has no state
+# machine behind an action, so nothing above readonly is enabled here.
+
+defaults:
+  user: admin
+  password: unused
+  allow: readonly
+
+redfish:
+  - name: dmtf-rackmount
+    address: 127.0.0.1:8481
+    known_failures:
+      # A confluent defect this bundle exposed on the first run. Health
+      # reporting indexes PCIeDevices without checking the service publishes
+      # it, so a KeyError escapes and the caller is told
+      # "Unexpected Error: 'PCIeDevices'". Recorded at both layers it shows
+      # up: the protocol read and the command a user actually runs. Remove
+      # both entries once a service without that collection is handled.
+      get_health: indexes PCIeDevices without checking it exists
+      nodehealth: indexes PCIeDevices without checking it exists
+
+  - name: dmtf-liquid-cooled
+    address: 127.0.0.1:8482
+
+# The rest are captured and documented in mockups/README.md but not enabled
+# yet, because confluent does not currently reach them cleanly. Each is a
+# device shape a normal BMC never presents, which is exactly why they are
+# worth keeping: enable one once the behaviour behind it is settled.
+#
+#  - name: dmtf-bladed
+#    address: 127.0.0.1:8483
+#    Several systems behind one manager, so a system url is needed to say
+#    which is meant. Confluent supplies one for enclosure managed nodes, and a
+#    bare connection cannot. This is the only multi system service available
+#    to test that disambiguation against.
+#
+#  - name: dmtf-pdu
+#    address: 127.0.0.1:8484
+#    Power equipment publishes no Systems collection, which is legal. The
+#    system url stays unset and the request built from it fails inside the url
+#    library rather than saying the device has no systems, so a caller is told
+#    "Unexpected Error". Enable once that reports a refusal.
+#
+#  - name: dmtf-power-shelf
+#    address: 127.0.0.1:8485
+#    As above, power equipment with no Systems collection.
+#
+#  - name: dmtf-cooling-unit
+#    address: 127.0.0.1:8486
+#    As above, cooling equipment with no Systems collection.
