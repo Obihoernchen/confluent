@@ -7,15 +7,20 @@ tests/README.md for the conventions.
 
 import asyncio
 import configparser
+import contextlib
 import functools
 import gc
+import importlib.util
 import json
 import os
 import pathlib
+import shutil
+import socket
 import subprocess
 import sys
 
 import pytest
+import pytest_asyncio
 
 
 # Environment variables that enable the correspondingly marked tier. The
@@ -98,6 +103,21 @@ _UNSET = object()
 # Connected BMC clients, keyed by device name. See the redfish_command fixture
 # for why these are reused rather than built per test.
 _REDFISH_CLIENTS = {}
+
+# The well-known IPMI RMCP port. Unlike Redfish, where a BMC behind a tunnel is
+# the usual reason to see a port, an IPMI target commonly carries one because a
+# simulator cannot have 623: it is privileged, and nothing here runs as root.
+_IPMI_PORT = 623
+
+# OpenIPMI's simulated BMC, which speaks RMCP+ from a described machine rather
+# than from hardware. An inventory entry opts in with simulator: true and the
+# port in its address is where it is asked to listen. tests/support/ipmisim.py
+# writes its configuration and says what it is and is not evidence of.
+_SIMULATOR = 'ipmi_sim'
+
+# What it prints once the channel is bound. Waiting for this rather than
+# sleeping is the difference between a tier that is slow and one that is flaky.
+_SIMULATOR_READY = 'Opened UDP port'
 
 
 def pytest_addoption(parser):
@@ -211,14 +231,41 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
-async def _asyncio_debug():
-    """Run every test's event loop in debug mode.
+def _asyncio_debug(request):
+    """Put each test's loop in debug mode, whichever loop that is.
+
+    Sync, and it asks for the async fixture below only when that applies.
+    Requesting an async function-scoped fixture is what builds a
+    function-scoped loop, and a test running on the session loop must not have
+    one: aiohmi registers its socket readers against whichever loop is current
+    when it opens a session, so a second loop appearing around the test costs
+    every IPMI read a timeout instead of an answer.
+
+    That was found the slow way. Replacing the fixture body with pass left the
+    tier hanging exactly as before, which is what identified the loop itself,
+    rather than anything the fixture did, as the problem.
+    """
+    marker = request.node.get_closest_marker('asyncio')
+    if marker and marker.kwargs.get('loop_scope') == 'session':
+        # _asyncio_debug_session has already done it for that loop.
+        return
+    request.getfixturevalue('_asyncio_debug_function')
+
+
+@pytest.fixture
+async def _asyncio_debug_function():
+    """Run a function-scoped test loop in debug mode.
 
     Debug mode reports slow callbacks, coroutines that were never scheduled
     and exceptions never retrieved from a task, all realistic failure modes in
     the console and plugin dispatch paths. set_debug also turns on coroutine
     origin tracking while the loop is running, so warnings carry the source
     location of the coroutine rather than just its name.
+
+    There are two of these, one per loop scope. Most of the suite gets a fresh
+    loop per test; the IPMI tier shares one for the session, because an IPMI
+    session cannot outlive the loop that opened it. Both need the same
+    treatment, and a fixture can only ask for the loop of its own scope.
 
     Set on the loop rather than through PYTHONASYNCIODEBUG, which is a
     process-wide flag that libraries read for their own purposes. aiohttp
@@ -233,6 +280,12 @@ async def _asyncio_debug():
     Exporting PYTHONASYNCIODEBUG yourself reintroduces that, and the hardware
     tier will fail against firmware that is fine in production.
     """
+    asyncio.get_running_loop().set_debug(True)
+
+
+@pytest_asyncio.fixture(scope='session', loop_scope='session', autouse=True)
+async def _asyncio_debug_session():
+    """The same, for the loop the IPMI tier shares. See _asyncio_debug."""
     asyncio.get_running_loop().set_debug(True)
 
 
@@ -350,6 +403,10 @@ def _parametrize_targets(metafunc, kinds, argname):
     on a given controller to what a single client would produce, and it is the
     same mechanism that will give an OS deployment test exclusive use of a
     node.
+
+    Parametrized at session scope so that a session-scoped fixture can be built
+    per device. A function-scoped parameter cannot be requested by one, and the
+    IPMI client has to be session-scoped: see the ipmi_command fixture.
     """
     targets = []
     for kind in kinds:
@@ -361,14 +418,14 @@ def _parametrize_targets(metafunc, kinds, argname):
                 reason='no {0} device configured: add one under {1} in the '
                        'inventory named by {2}'.format(
                            ' or '.join(kinds), '/'.join(kinds),
-                           _INVENTORY_ENV)))])
+                           _INVENTORY_ENV)))], scope='session')
         return
     metafunc.parametrize(argname, [
         pytest.param(target,
                      id=str(target.get('name', target['address'])),
                      marks=pytest.mark.xdist_group(
                          str(target.get('name', target['address']))))
-        for target in targets])
+        for target in targets], scope='session')
 
 
 def pytest_generate_tests(metafunc):
@@ -396,10 +453,198 @@ def _split_port(address, default=443):
     return address, default
 
 
+def _support(name):
+    """Import a helper from tests/support, which is not a package.
+
+    There are deliberately no __init__.py files under tests/, so nothing here
+    can be imported by name. Loading by path keeps it that way rather than
+    adding a third importable package beside the two confluent namespace
+    packages.
+    """
+    path = pathlib.Path(__file__).parent / 'support' / '{0}.py'.format(name)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _port_is_taken(host, port):
+    """Whether something already holds this UDP port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return True
+    return False
+
+
+@pytest.fixture(scope='session')
+def ipmi_simulator(tmp_path_factory):
+    """Start a simulated BMC for any inventory entry that asks for one.
+
+    Yields a callable taking a target. Entries without ``simulator: true`` pass
+    through untouched, so one inventory can mix real BMCs with a simulated one
+    and every fixture can call this without checking first.
+
+    A simulator already listening on the port is left alone and used as it
+    stands. That covers one started by hand, and it covers a second xdist
+    worker arriving for the same device: only the process that started one ever
+    stops it.
+
+    Skips rather than fails when ipmi_sim is not installed, so that an
+    inventory naming a simulator is still usable on a machine without it.
+    """
+    ipmisim = _support('ipmisim')
+    started = []
+
+    def ensure(target):
+        if not (target or {}).get('simulator'):
+            return
+        if shutil.which(_SIMULATOR) is None:
+            pytest.skip(
+                'a simulated BMC needs {0}, from OpenIPMI\'s lanserv tools '
+                '(package OpenIPMI-lanserv on Fedora and EL)'.format(
+                    _SIMULATOR))
+
+        host, port = _split_port(target['address'], _IPMI_PORT)
+        if _port_is_taken(host, port):
+            return
+
+        directory = tmp_path_factory.mktemp('ipmisim')
+        state = directory / 'state'
+        state.mkdir()
+        lanconf, emulation = ipmisim.write_configuration(
+            directory, port, target['user'], target.get('password'))
+
+        simulator = subprocess.Popen(
+            [_SIMULATOR, '-c', str(lanconf), '-f', str(emulation),
+             '-n', '-s', str(state)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True)
+        started.append(simulator)
+        _wait_for_simulator(simulator, port)
+
+    yield ensure
+
+    for simulator in started:
+        simulator.terminate()
+        try:
+            simulator.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            simulator.kill()
+            simulator.wait(timeout=10)
+        simulator.stdout.close()
+
+
+def _wait_for_simulator(simulator, port):
+    """Block until the simulator says it has the channel, or explain why not."""
+    while True:
+        if simulator.poll() is not None:
+            pytest.fail('{0} exited during startup:\n{1}'.format(
+                _SIMULATOR, simulator.stdout.read()))
+        line = simulator.stdout.readline()
+        if not line:
+            pytest.fail('{0} stopped talking before it bound port {1}'.format(
+                _SIMULATOR, port))
+        if _SIMULATOR_READY in line:
+            return
+
+
+async def _redfish_client(target):
+    """A connected Redfish client, reused across the tests for one device."""
+    from aiohmi.redfish.command import Command
+
+    key = target.get('name', target['address'])
+    if key not in _REDFISH_CLIENTS:
+        host, port = _split_port(target['address'])
+        _REDFISH_CLIENTS[key] = await Command.create(
+            host, target['user'], target.get('password'),
+            verifycallback=lambda cert: True, port=port)
+    return _REDFISH_CLIENTS[key]
+
+
+@contextlib.asynccontextmanager
+async def _ipmi_client(target):
+    """A connected IPMI client, closed again on the way out.
+
+    Built fresh per test, unlike the Redfish one, and for the opposite reason.
+    An IPMI session is a live UDP conversation with keepalives running on the
+    event loop that opened it, and every test here gets its own loop, so a
+    cached client would be talking on a loop that has since closed.
+
+    What makes one per test affordable is that IPMI can hang up. Closing the
+    session in teardown keeps a BMC's session table from filling the way it
+    does over Redfish, where aiohmi has no logout at all and the Redfish
+    fixture has to cache to compensate.
+    """
+    from aiohmi.ipmi.command import Command
+
+    host, port = _split_port(target['address'], _IPMI_PORT)
+    command = await Command.create(
+        host, target['user'], target.get('password'), port=port)
+    try:
+        yield command
+    finally:
+        await command.ipmi_session.logout()
+
+
 @pytest.fixture
 def redfish_bmc():
     """Address of a Redfish BMC to test against, or skip."""
     return _hardware_target('CONFLUENT_TEST_REDFISH_BMC')
+
+
+@pytest_asyncio.fixture(scope='session', loop_scope='session')
+async def ipmi_command(ipmi_target, ipmi_simulator):
+    """A connected aiohmi IPMI client, one per configured device.
+
+    The IPMI counterpart of redfish_command. Reaching this point already proves
+    an RMCP+ session was negotiated, which is most of what can go wrong before
+    a command is ever sent.
+
+    Built once for the session and on a loop that lasts as long, which the
+    Redfish fixture arrives at from the other direction. There it is a choice,
+    to avoid leaving sessions behind. Here it is forced: an IPMI session is a
+    UDP conversation whose sockets and pending waiters live in the loop that
+    opened it, and aiohmi holds them in module state shared by every session in
+    the process. Used from a second loop it does not fail, it stops answering,
+    which costs a per-test timeout each time. Verified by trying it.
+
+    A test using this must therefore run on the same loop, which is what the
+    asyncio(loop_scope='session') marker on the IPMI modules is for. Without it
+    the tests hang rather than fail, so do not drop it from a new file.
+
+    Credentials come from the inventory file or the environment, exactly as
+    they do for Redfish, and the same warning applies: do not run this tier
+    with --showlocals.
+    """
+    ipmi_simulator(ipmi_target)
+    async with _ipmi_client(ipmi_target) as command:
+        yield command
+
+
+@pytest_asyncio.fixture(scope='session', loop_scope='session')
+async def bmc_command(bmc_target, ipmi_simulator):
+    """A connected client for whichever transport this device speaks.
+
+    For tests that are about what confluent asks of a BMC rather than about how
+    it asks. Both clients present the same read methods, so a test written
+    against this runs over Redfish and IPMI without knowing which it has, and
+    an inventory listing both kinds reports one result per device per test.
+
+    Which methods a given client actually implements differs, and that is
+    discovered rather than declared: a client without one is a skip, not a
+    failure.
+
+    Session-scoped for the reason given in ipmi_command, which applies whenever
+    the device on the other end turns out to speak IPMI.
+    """
+    if bmc_target['method'] == 'ipmi':
+        ipmi_simulator(bmc_target)
+        async with _ipmi_client(bmc_target) as command:
+            yield command
+    else:
+        yield await _redfish_client(bmc_target)
 
 
 @pytest.fixture
@@ -436,15 +681,7 @@ async def redfish_command(redfish_target):
     fresh one. Under xdist the cache is per worker, which with one device per
     worker still comes to one session per device.
     """
-    from aiohmi.redfish.command import Command
-
-    key = redfish_target.get('name', redfish_target['address'])
-    if key not in _REDFISH_CLIENTS:
-        host, port = _split_port(redfish_target['address'])
-        _REDFISH_CLIENTS[key] = await Command.create(
-            host, redfish_target['user'], redfish_target.get('password'),
-            verifycallback=lambda cert: True, port=port)
-    return _REDFISH_CLIENTS[key]
+    return await _redfish_client(redfish_target)
 
 
 @pytest.fixture
@@ -460,7 +697,14 @@ def smm():
 
 
 def _service_nodes():
-    """The inventory as confluent node definitions, keyed by device name."""
+    """The inventory as confluent node definitions, keyed by device name.
+
+    An address may carry a port for either method: both plugins read one off
+    hardwaremanagement.manager. The ipmi plugin only learned to as of "Read a
+    port off the manager address over ipmi too", so on a base without that
+    commit every IPMI device here is reached on 623 whatever its address says,
+    and a device that is not there fails rather than skipping.
+    """
     nodes = {}
     for kind in ('redfish', 'ipmi'):
         for target in _targets(kind):
@@ -538,12 +782,16 @@ def service_nodes(confluent_service):
 
 
 @pytest.fixture
-def service_node(bmc_target):
+def service_node(bmc_target, ipmi_simulator):
     """The name the test service knows this device by.
 
     Derived from bmc_target so the CLI tests inherit the same parametrization,
     xdist grouping and per-device safety ceiling as everything else.
+
+    Starts the simulator behind a simulated device, so the CLI tier reaches one
+    the same way it reaches a real BMC.
     """
+    ipmi_simulator(bmc_target)
     return str(bmc_target.get('name', bmc_target['address']))
 
 

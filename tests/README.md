@@ -49,7 +49,12 @@ alongside the two `confluent` namespace packages.
 ### Naming test files
 
 `test_<transport>_<subsystem>.py`, for example `test_redfish_firmware.py`. The transport comes first because the
-same subsystem will eventually be tested over more than one (`test_ipmi_firmware.py`, `test_pdu_outlets.py`).
+same subsystem is tested over more than one (`test_ipmi_system.py` beside `test_redfish_system.py`).
+
+Where a test is genuinely the same question over either transport, the role name `bmc` takes the transport's
+place: `test_bmc_reads.py` asks for `bmc_command` and runs against whatever the inventory holds. Reach for that
+only when the reads involved mean the same thing on both. Identity does not, which is why the system files stay
+apart: Redfish answers it from a system resource an OEM handler picked, IPMI from a FRU inventory area.
 
 **Do not put the safety level in the filename.** It already lives in the marker, which is what actually gates the
 test, and `-m readonly` selects on it. A filename that says `readonly` is a second copy of that fact which goes
@@ -162,6 +167,9 @@ is listed.
 
 Fixtures aggregate methods into roles, so a test asks for the broadest one it genuinely works against:
 
+An entry may also carry `simulator: true`, which asks for a simulated device to be started on the port in its
+address rather than a real one being contacted. Only `ipmi` supports it today. See "Testing without hardware".
+
 | fixture | methods |
 |---|---|
 | `redfish_target`, `ipmi_target` | that one method |
@@ -206,11 +214,33 @@ applies one layer down.
 
 The tier does not care whether a device is real. Point `CONFLUENT_TEST_HARDWARE` at an inventory describing a
 replayed one and the same tests run, which is what makes this usable where no hardware is attached, continuous
-integration included.
+integration included. There is one committed inventory per transport:
 
-Replay uses a captured mockup rather than a generic emulator, because a capture of a real machine answers what
-that machine answered, vendor extensions included, and so exercises the OEM handler that machine selects. A generic
-emulator only ever reaches the generic path.
+```sh
+CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml python3 -m pytest -m hardware
+CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml   python3 -m pytest -m hardware
+```
+
+The IPMI one needs `ipmi_sim`, from OpenIPMI's lanserv tools (`OpenIPMI-lanserv` on Fedora and EL) and nothing
+else: the `ipmi_simulator` fixture starts and stops it, so that command is the whole setup. The Redfish one still
+needs its mockup servers started by hand, per `tests/support/mockups/README.md`.
+
+Neither is a substitute for the other, and the difference is worth keeping in mind when reading a green run:
+
+- **A mockup replays what a real machine answered**, vendor extensions included, so it exercises the OEM handler
+  that machine selects. That is why captures beat emulators, and why the vendor captures are worth keeping even
+  though they cannot be published.
+- **`ipmi_sim` answers from a model of a BMC that OpenIPMI wrote.** It proves the session comes up and every read
+  path is reached, and it proves nothing about any vendor. Nothing here selects an OEM handler, and no test should
+  be written that assumes one. `tests/support/ipmisim.py` describes the machine it presents.
+
+What the simulator does not implement is recorded as `known_failures` in its inventory rather than worked around,
+so those tests still run and would report an unexpected pass if a later `ipmi_sim` grew the feature. It has no
+chassis boot options at all, and it refuses the FRU read behind `nodeinventory`.
+
+Reaching the simulator through confluent, rather than only at the protocol layer, needs the commit "Read a port off
+the manager address over ipmi too". Before it, the ipmi plugin connected to 623 whatever the address said, and the
+simulator cannot have 623 because binding it takes privileges no test run should want.
 
 `tests/support/capture-mockups.py` captures a device, running DMTF's Redfish-Mockup-Creator from their published
 container so there is nothing to clone or install. It prunes the specification documents afterwards, since
@@ -281,6 +311,23 @@ All in `conftest.py`.
   earlier test happened to evaluate a matching range.
 - **`redfish_bmc`, `ipmi_bmc`, `smm`** return the address of a specific piece of test equipment, or skip when its
   variable is unset.
+- **`ipmi_command`** returns a connected aiohmi IPMI client, and **`bmc_command`** returns whichever client the
+  device speaks, for tests that work either way.
+
+  Both are session-scoped and run on a session-scoped event loop, which the modules using them declare with
+  `pytest.mark.asyncio(loop_scope='session')`. This is not a preference. An IPMI session is a UDP conversation
+  whose sockets aiohmi registers against the loop that was running when it opened, in module state shared by the
+  whole process. Used from a second loop it does not raise, it stops answering, so every read costs a timeout.
+  A new IPMI test file without that marker will hang rather than fail, which is a bad afternoon: copy an existing
+  one.
+
+  The same constraint is why `_asyncio_debug` is a sync fixture that pulls in an async one rather than being async
+  itself. Requesting an async function-scoped fixture is what builds a function-scoped loop, and a session-loop
+  test must not have one at all.
+- **`ipmi_simulator`** starts `ipmi_sim` for any inventory entry carrying `simulator: true`, and stops it
+  afterwards. A simulator already listening on the port is used as it stands and left running, which covers one
+  started by hand and a second xdist worker arriving for the same device. It skips, rather than fails, when
+  `ipmi_sim` is not installed.
 - **`redfish_command`** returns a connected aiohmi Redfish client, and additionally needs
   `CONFLUENT_TEST_REDFISH_USER` and `CONFLUENT_TEST_REDFISH_PASSWORD`. Credentials come from the environment only
   and must never be committed. Do not run the hardware tier with `--showlocals`, which would print the password

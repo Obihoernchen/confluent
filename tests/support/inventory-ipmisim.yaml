@@ -1,0 +1,59 @@
+# Inventory for a simulated BMC, so the IPMI tier runs where nothing is
+# attached. Nothing outside this repository is needed except ipmi_sim itself,
+# from OpenIPMI's lanserv tools (OpenIPMI-lanserv on Fedora and EL):
+#
+#   CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml \
+#       python3 -m pytest -m hardware
+#
+# The simulator is started and stopped by the ipmi_simulator fixture, so unlike
+# the Redfish mockups there is nothing to serve by hand. Its configuration, and
+# what it is and is not evidence of, are in tests/support/ipmisim.py.
+#
+# The credentials below are the simulator's own, written into a config file in
+# a temp directory at startup. They protect nothing and are not a secret.
+#
+# Port 6230 rather than 623 because binding the real IPMI port needs privileges
+# no test run should want. Reaching it through confluent needs "Read a port off
+# the manager address over ipmi too": before that commit the plugin connected
+# to 623 whatever the address said, and the CLI tier fails here without it.
+
+defaults:
+  user: admin
+  password: password
+  # Nothing here is real, so a write costs nothing and a boot override is worth
+  # exercising for the day the simulator learns to answer one.
+  allow: reversible
+
+ipmi:
+  - name: ipmisim
+    simulator: true
+    address: 127.0.0.1:6230
+    known_failures:
+      # Not confluent defects. Each is something OpenIPMI's simulator does not
+      # implement, listed so the test still runs and reports rather than being
+      # deleted or silently skipped. If a newer ipmi_sim grows one of these,
+      # the entry turns into an unexpected pass and can go.
+      #
+      # There are no boot option commands at all: the simulator's vocabulary
+      # covers sensors, FRU, SEL and power, and chassis boot options are not in
+      # it. Both the read and the reversible writes built on it are affected.
+      test_boot_device_is_reported: ipmi_sim has no chassis boot options
+      test_ipmi_bootdev: ipmi_sim has no chassis boot options
+      # The simulator serves a FRU area but refuses the read confluent makes of
+      # it, answering "Request data field length limit exceeded" whatever the
+      # area holds. get_inventory_descriptions works, so the device is found;
+      # only reading it back does not. nodeinventory is the same gap seen from
+      # the CLI, where it surfaces as "Requested sensor, data, or record not
+      # present" and a non-zero exit, which is at least an honest refusal.
+      test_system_identity_is_reported: ipmi_sim refuses the FRU read
+      test_inventory_reports_hardware_detail: ipmi_sim refuses the FRU read
+      #
+      # This last one is not the simulator. aiohmi's IPMI client has no
+      # get_identify at all, so nodeidentify against any IPMI BMC exits 0 and
+      # prints the node name with no state after it. A caller is told the
+      # command worked and given nothing, which is worse than a refusal. The
+      # protocol sweep skips it for a missing method; the CLI cannot, because
+      # from there it looks like a successful answer. Remove this entry if the
+      # client learns to read the identify state, or if confluent starts
+      # refusing what it cannot answer.
+      nodeidentify: aiohmi has no get_identify over ipmi, so it answers empty

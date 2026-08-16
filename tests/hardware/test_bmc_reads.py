@@ -107,7 +107,7 @@ async def test_read_answers_or_refuses_with_a_reason(bmc_command,
         assert str(caught).strip(), (
             '{0} was refused with an empty message, so a user is told '
             'nothing'.format(operation))
-    except Exception as caught:  # noqa: BLE001  the classification is the test
+    except Exception as caught:  # the classification is what this test is for
         # A bare Exception reaches a user as "Unexpected Error" whatever it
         # carries, which is poor, but a real reason still tells them
         # something. An empty one tells them nothing at all.
