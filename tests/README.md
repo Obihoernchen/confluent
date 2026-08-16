@@ -202,6 +202,23 @@ per machine. A device may refuse a command it does not support, provided it expl
 identify light is a skip, an unexplained failure is a failure. That is the same contract the protocol-level sweep
 applies one layer down.
 
+### Testing without hardware
+
+The tier does not care whether a device is real. Point `CONFLUENT_TEST_HARDWARE` at an inventory describing a
+simulated one and the same tests run, which is what makes this usable where no hardware is attached, continuous
+integration included.
+
+`tests/support/inventory-simulated.yaml` is a worked example against `sushy-tools`, which needs no hypervisor and
+no privileges. Its header carries the emulator configuration and the commands to start it.
+
+A simulator implements less than real firmware, so entries carry a `known_failures` mapping of nodeid substring to
+reason. Those tests still run and report as xfail rather than being skipped or deleted, and one that starts passing
+shows up as an unexpected pass so the entry can be removed.
+
+Keep two kinds of entry apart in that mapping, as the example does. A gap in the simulation is one thing. A
+confluent defect the simulator exposed is another, and should be fixed rather than accumulated: pointing the suite
+at a device publishing a minimal but legal Redfish tree found two on the first run.
+
 ### Running in parallel
 
 Hardware tests are almost entirely network wait, so they parallelise well: three BMCs took 22.9s sequentially and

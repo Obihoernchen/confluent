@@ -123,6 +123,24 @@ def _device_ceiling(item):
     return None
 
 
+def _device_known_failures(item):
+    """The known_failures mapping of the device this test was parametrized on.
+
+    A simulator implements less than real firmware, and a given machine may
+    have a defect someone has already looked at. Either way the test should
+    still run and report, rather than being deleted or silently skipped, so
+    these become xfail rather than skip: a listed test that starts passing is
+    reported as an unexpected pass and the entry can go.
+    """
+    callspec = getattr(item, 'callspec', None)
+    if callspec is None:
+        return {}
+    for value in callspec.params.values():
+        if isinstance(value, dict) and 'address' in value:
+            return value.get('known_failures') or {}
+    return {}
+
+
 def _safety_level(item):
     """The one safety marker on a test, or None if that is not the case."""
     declared = [name for name in _SAFETY_LEVELS if name in item.keywords]
@@ -169,6 +187,11 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_lab)
         if 'hardware' not in item.keywords:
             continue
+
+        for pattern, reason in _device_known_failures(item).items():
+            if pattern in item.nodeid:
+                item.add_marker(pytest.mark.xfail(reason=reason,
+                                                  strict=False))
 
         # The device ceiling and the run ceiling both apply, and the lower
         # wins. "In use right now" is a property of the machine, not of the

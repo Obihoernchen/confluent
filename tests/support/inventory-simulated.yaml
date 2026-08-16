@@ -1,0 +1,60 @@
+# Example inventory for a simulated Redfish device.
+#
+# The hardware tier does not care whether a device is real. Point
+# CONFLUENT_TEST_HARDWARE at this file instead of one describing your bench and
+# the same tests run, which is what makes the tier usable somewhere with no
+# hardware attached, continuous integration included.
+#
+# Start the emulator first. It needs no hypervisor and no privileges:
+#
+#   pip install sushy-tools
+#   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+#           -days 30 -nodes -subj /CN=localhost
+#   sushy-emulator --config emulator.py --port 8444 \
+#                  --ssl-certificate cert.pem --ssl-key key.pem
+#
+# with emulator.py containing:
+#
+#   SUSHY_EMULATOR_FAKE_DRIVER = True
+#   SUSHY_EMULATOR_STATE_DIR = '/tmp/sushy-state'
+#   SUSHY_EMULATOR_FAKE_SYSTEMS = [
+#       {
+#           'uuid': '11111111-2222-3333-4444-555555555555',
+#           'name': 'fake-node-1',
+#           'power_state': 'On',
+#           'external_notifier': False,
+#           'nics': [{'mac': '00:5c:52:31:3a:9c', 'ip': '172.22.0.100'}],
+#       },
+#   ]
+#
+# Give every field of a fake system. The driver stores whatever it is handed
+# and answers 500 later for anything it was not, which surfaces as a confusing
+# failure a long way from the cause. The state directory is written on first
+# start and reused after, so change a system definition and clear it too.
+
+redfish:
+  - name: sim-fake-1
+    address: 127.0.0.1:8444
+    user: admin
+    password: password
+    allow: readonly
+
+    # Tests that cannot pass against this device. They still run and report;
+    # one that starts passing shows up as an unexpected pass so the entry can
+    # be removed. Two different things are listed here, deliberately kept
+    # apart, because only one of them is confluent's problem.
+    known_failures:
+      # The emulator models power and boot state and nothing else. These are
+      # gaps in the simulation.
+      test_system_identity_is_reported: emulator reports no Model or SerialNumber
+      test_inventory_reports_hardware_detail: emulator has no hardware inventory
+      test_firmware_reports_a_version: emulator has no firmware inventory
+
+      # These are confluent defects, found by pointing the suite at a device
+      # that publishes a minimal but legal Redfish tree. A manager with no
+      # EthernetInterfaces leaves the nic url None, and the request built from
+      # it fails with a TypeError out of the url library rather than a stated
+      # refusal, so a caller is told "Unexpected Error". Real BMCs all happen
+      # to publish the link, which is why this went unnoticed.
+      get_hostname: manager without EthernetInterfaces raises TypeError
+      get_net_configuration: manager without EthernetInterfaces raises TypeError
