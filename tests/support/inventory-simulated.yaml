@@ -17,6 +17,8 @@
 #
 #   SUSHY_EMULATOR_FAKE_DRIVER = True
 #   SUSHY_EMULATOR_STATE_DIR = '/tmp/sushy-state'
+#   SUSHY_EMULATOR_FAKE_DRIVER = True
+#   SUSHY_EMULATOR_STATE_DIR = '/tmp/sushy-state-1'
 #   SUSHY_EMULATOR_FAKE_SYSTEMS = [
 #       {
 #           'uuid': '11111111-2222-3333-4444-555555555555',
@@ -26,6 +28,13 @@
 #           'nics': [{'mac': '00:5c:52:31:3a:9c', 'ip': '172.22.0.100'}],
 #       },
 #   ]
+#
+# Two devices are listed below, so start a second instance the same way on
+# port 8445, with its own state directory and its own system uuid and name.
+# One instance cannot serve both: a second fake system in one emulator makes
+# the system url ambiguous, and the client refuses it as a multi system
+# manager. Two devices are what the noderange tests need, and without them the
+# only place in the suite that dispatches concurrently is skipped.
 #
 # Give every field of a fake system. The driver stores whatever it is handed
 # and answers 500 later for anything it was not, which surfaces as a confusing
@@ -56,5 +65,17 @@ redfish:
       # it fails with a TypeError out of the url library rather than a stated
       # refusal, so a caller is told "Unexpected Error". Real BMCs all happen
       # to publish the link, which is why this went unnoticed.
+      get_hostname: manager without EthernetInterfaces raises TypeError
+      get_net_configuration: manager without EthernetInterfaces raises TypeError
+
+  - name: sim-fake-2
+    address: 127.0.0.1:8445
+    user: admin
+    password: password
+    allow: readonly
+    known_failures:
+      test_system_identity_is_reported: emulator reports no Model or SerialNumber
+      test_inventory_reports_hardware_detail: emulator has no hardware inventory
+      test_firmware_reports_a_version: emulator has no firmware inventory
       get_hostname: manager without EthernetInterfaces raises TypeError
       get_net_configuration: manager without EthernetInterfaces raises TypeError

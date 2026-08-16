@@ -527,6 +527,17 @@ def confluent_service(tmp_path_factory):
 
 
 @pytest.fixture
+def service_nodes(confluent_service):
+    """Every node the test service knows, for tests that need them together.
+
+    Deliberately not parametrized per device: the point of asking for all of
+    them at once is to drive one request across several, which is the only
+    place in the suite that produces genuinely concurrent dispatch.
+    """
+    return sorted(_service_nodes())
+
+
+@pytest.fixture
 def service_node(bmc_target):
     """The name the test service knows this device by.
 
