@@ -76,6 +76,12 @@ particular answer has to be checked.
 
 ## Markers
 
+**The hardware tier needs two keys, and an inventory is only one of them.** `CONFLUENT_TEST_HARDWARE` says what the
+devices are; `--run-hardware` says they may be touched. Without the flag every hardware test skips, whatever the
+environment holds. That is on purpose: exporting the inventory variable once in a shell is the natural thing to do,
+and without a second key every later plain `pytest` in that shell would run against real machines.
+
+
 | marker | what it means | how to enable |
 |---|---|---|
 | *(none)* | pure unit test, always runs | |
@@ -256,8 +262,8 @@ replayed one and the same tests run, which is what makes this usable where no ha
 integration included. There is one committed inventory per transport:
 
 ```sh
-CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml python3 -m pytest -m hardware
-CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml   python3 -m pytest -m hardware
+CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml python3 -m pytest -m hardware --run-hardware
+CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml   python3 -m pytest -m hardware --run-hardware
 ```
 
 Each command above is the whole setup: the fixtures start what a device stands in for and stop it afterwards.
@@ -308,24 +314,20 @@ one thing, and a confluent defect the replay exposed is another that should be f
 
 ### Running in parallel
 
-Hardware tests are almost entirely network wait, so they parallelise well: three BMCs took 22.9s sequentially and
-14.5s with `-n 3`, which is the slowest single device rather than the sum.
+Not yet, deliberately. `pytest-xdist` is not a dependency and no `--dist` option is set, because an option in
+`addopts` that only parses when a plugin happens to be installed makes a fresh environment fail to start pytest at
+all rather than fail a test. Reproduce the old behaviour with `-p no:xdist`.
 
-```sh
-python3 -m pytest -m hardware -n 3
-```
+The grouping this will need is already in place: each target carries an `xdist_group` so every test for one machine
+would land on one worker, and `tests/unit/test_fixture_isolation.py` carries one because its checks depend on
+running together and in order. The marker is registered in `pytest.ini` so it stays legal under `--strict-markers`
+without the plugin. Adding xdist later therefore means installing it, setting `--dist loadgroup`, and solving the
+one thing that grouping does not: a simulator or mockup started by one worker and merely used by another is torn
+down when its owner finishes, so ownership needs an interprocess lock and a shared lifecycle. The noderange tests,
+which want every device at once rather than one, make that sharper.
 
-Size `-n` by the number of devices, not by CPU count. `--dist loadgroup` is already in `addopts` and is inert
-without `-n`, so this needs no other flags.
-
-**The unit of parallelism is the device, not the test.** Each target gets its own `xdist_group`, so every test for
-one machine lands on one worker. That keeps concurrent load on a controller to what a single client would produce,
-avoids multiplying Redfish sessions that aiohmi never closes, and is the same mechanism that will give a future OS
-deployment test exclusive use of a node.
-
-Do not use the default `--dist load`. It splits files across workers, and `tests/unit/test_fixture_isolation.py`
-depends on its tests running together and in order: distributed, its checks run where nothing was ever dirtied and
-pass while proving nothing. That file carries an `xdist_group` for the same reason.
+Measured before it was removed: three BMCs took 22.9s sequentially and 14.5s at `-n 3`, the slowest single device
+rather than the sum. Worth having, once it is correct.
 
 Long-running tests need their own `@pytest.mark.timeout(...)`: `addopts` sets a 60 second limit that an OS
 deployment would blow straight through.
@@ -457,8 +459,9 @@ exist, and why `requirements-test.txt` does not apply them to the default setup.
 Decisions, not omissions:
 
 - **No `pytest-xdist`.** The `configmanager` and `pluginmap` fixtures both patch module globals, so parallel workers
-  would hide exactly the isolation bugs this design is most exposed to. Revisit once the suite is demonstrably
-  deterministic.
+  would hide exactly the isolation bugs this design is most exposed to, and a shared simulator outliving the worker
+  that started it needs solving first. Revisit once the suite is demonstrably deterministic. See "Running in
+  parallel" for what is already in place for it.
 - **No tox or nox.** Deferred to when a CI job is added. Note for that evaluation: a per-component split cannot
   work, because `confluent_server/setup.py.tmpl` declares no dependency on the client (the
   `Requires: confluent_client` lives only in `confluent_server.spec.tmpl`), so a server-only environment cannot

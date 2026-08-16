@@ -6,10 +6,12 @@ configmanager's module globals with the fixtures that reset them, and would
 have to run its socket in whichever event loop happened to be current. A
 separate process shares nothing and is closer to how confluent actually runs.
 
-Reads its configuration from argv: a socket path, a JSON node definition
-mapping of {nodename: {attribute: value}}, and a directory to log into. Prints
-READY on stdout once the socket is accepting, so the parent knows when to
-proceed.
+Reads a socket path and a directory to log into from argv, and the node
+definitions, {nodename: {attribute: value}}, as JSON on stdin. The node
+definitions hold BMC passwords, and argv is world readable through ps and
+/proc, which is the same reason the inventory is a file rather than a set of
+command line options. Prints READY on stdout once the socket is accepting, so
+the parent knows when to proceed.
 
 Everything it writes afterwards, on stdout or stderr, is read by the fixture
 and held against the test that was running. A service that logs a traceback
@@ -76,11 +78,13 @@ async def main(socketpath, nodes, logdirectory):
 
 
 if __name__ == '__main__':
+    # stdin is fully consumed before anything else runs, and the parent closes
+    # its end straight after writing, so this does not block.
     # debug=True for the same reasons the in-process tests set it on their own
     # loop: a task whose exception nobody retrieved, and a coroutine that was
     # never awaited, are both silent otherwise, and this is the one component
     # in the suite that dispatches the way production does. Set here rather
     # than through PYTHONASYNCIODEBUG, which aiohttp reads for its own purposes
     # and which changes how the wire is parsed. See the _asyncio_debug fixture.
-    asyncio.run(main(sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]),
+    asyncio.run(main(sys.argv[1], json.loads(sys.stdin.read()), sys.argv[2]),
                 debug=True)

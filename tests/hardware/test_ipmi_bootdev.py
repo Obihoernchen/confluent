@@ -36,21 +36,29 @@ async def restored_bootdev(ipmi_command):
         # Teardown, so this runs after a failed assertion too. 'default' is
         # the documented way to clear a directed boot request, and is what a
         # BMC with no override set reports.
+        #
+        # uefimode goes back too. It is part of what get_bootdev reports and
+        # set_bootdev defaults it to False, so restoring without it leaves a
+        # machine that booted UEFI set to legacy: the write would be reverted
+        # and the mode quietly not, which is not what reversible promises.
         await ipmi_command.set_bootdev(
             original.get('bootdev', 'default'),
-            persist=original.get('persistent', False))
+            persist=original.get('persistent', False),
+            uefiboot=original.get('uefimode', False))
 
 
 async def test_boot_override_can_be_set_and_cleared(ipmi_command,
                                                     restored_bootdev):
     """Setting an override is visible, and clearing it returns the BMC to
     reporting no directed boot request."""
-    await ipmi_command.set_bootdev('network')
+    await ipmi_command.set_bootdev(
+        'network', uefiboot=restored_bootdev.get('uefimode', False))
 
     changed = await ipmi_command.get_bootdev()
     assert changed['bootdev'] == 'network', changed
 
-    await ipmi_command.set_bootdev('default')
+    await ipmi_command.set_bootdev(
+        'default', uefiboot=restored_bootdev.get('uefimode', False))
 
     cleared = await ipmi_command.get_bootdev()
     assert cleared['bootdev'] == 'default', cleared
@@ -64,7 +72,8 @@ async def test_boot_override_survives_a_reread(ipmi_command,
     instead of what it stored, which a single read immediately after the write
     would not distinguish.
     """
-    await ipmi_command.set_bootdev('network')
+    await ipmi_command.set_bootdev(
+        'network', uefiboot=restored_bootdev.get('uefimode', False))
 
     first = await ipmi_command.get_bootdev()
     second = await ipmi_command.get_bootdev()
@@ -78,12 +87,17 @@ async def test_prior_setting_is_restored(ipmi_command, restored_bootdev):
     """The fixture's own contract: whatever the BMC had before is what it has
     after. Asserting it here means a broken restore fails loudly rather than
     quietly leaving the machine changed."""
-    await ipmi_command.set_bootdev('network')
+    await ipmi_command.set_bootdev(
+        'network', uefiboot=restored_bootdev.get('uefimode', False))
     assert (await ipmi_command.get_bootdev())['bootdev'] == 'network'
 
     await ipmi_command.set_bootdev(
         restored_bootdev.get('bootdev', 'default'),
-        persist=restored_bootdev.get('persistent', False))
+        persist=restored_bootdev.get('persistent', False),
+        uefiboot=restored_bootdev.get('uefimode', False))
 
-    assert (await ipmi_command.get_bootdev())['bootdev'] == \
-        restored_bootdev['bootdev']
+    restored = await ipmi_command.get_bootdev()
+    assert restored['bootdev'] == restored_bootdev['bootdev']
+    # The mode as well as the device, since that is the half a caller does not
+    # think to check and the half this file previously left changed.
+    assert restored.get('uefimode') == restored_bootdev.get('uefimode')

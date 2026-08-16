@@ -3,7 +3,7 @@
 # from OpenIPMI's lanserv tools (OpenIPMI-lanserv on Fedora and EL):
 #
 #   CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml \
-#       python3 -m pytest -m hardware
+#       python3 -m pytest -m hardware --run-hardware
 #
 # The simulator is started and stopped by the ipmi_simulator fixture, so unlike
 # the Redfish mockups there is nothing to serve by hand. Its configuration, and

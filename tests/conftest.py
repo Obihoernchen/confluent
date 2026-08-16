@@ -27,13 +27,11 @@ import pytest
 import pytest_asyncio
 
 
-# Environment variables that enable the correspondingly marked tier. The
-# collection hook below is a coarse gate: it keeps a default run away from
-# hardware entirely. Per-target precision comes from the redfish_bmc, ipmi_bmc
-# and smm fixtures, so that naming one BMC does not enable tests for equipment
-# that is not present.
-_HARDWARE_ENV = ('CONFLUENT_TEST_REDFISH_BMC', 'CONFLUENT_TEST_IPMI_BMC',
-                 'CONFLUENT_TEST_SMM', 'CONFLUENT_TEST_HARDWARE')
+# The hardware tier is enabled by --run-hardware and nothing else, so that no
+# environment left over in a shell can turn a plain pytest into a run against
+# real machines. The collection hook below is the coarse gate; per-target
+# precision comes from the target fixtures, so naming one BMC does not enable
+# tests for equipment that is not there.
 _LAB_ENV = ('CONFLUENT_TEST_LAB',)
 
 # Path to a YAML inventory of test equipment, so more than one device can be
@@ -138,6 +136,10 @@ _MOCKUP_READY_TIMEOUT = 30
 
 def pytest_addoption(parser):
     parser.addoption(
+        '--run-hardware', action='store_true', default=False,
+        help='Let the hardware tier run. An inventory alone does not: it says '
+             'what the devices are, this says they may be touched.')
+    parser.addoption(
         '--hw-level', default='readonly', choices=_SAFETY_LEVELS,
         help='Most that any test may do to a device this run (default: '
              'readonly). A device also carries its own ceiling in the '
@@ -195,10 +197,16 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    hardware_ready = any(os.environ.get(name) for name in _HARDWARE_ENV)
+    # Two keys, and the inventory is not one of them. Naming devices says what
+    # they are; --run-hardware says they may be touched. Exporting the
+    # inventory variable once, which is the natural thing to do, otherwise
+    # turns every later plain pytest in that shell into a run against real
+    # machines, and that is not something to find out afterwards.
+    hardware_ready = config.getoption('run_hardware')
     lab_ready = any(os.environ.get(name) for name in _LAB_ENV)
     skip_hardware = pytest.mark.skip(
-        reason='needs hardware, set one of: ' + ', '.join(_HARDWARE_ENV))
+        reason='needs --run-hardware, and a device in the inventory named by '
+               + _INVENTORY_ENV)
     skip_lab = pytest.mark.skip(
         reason='needs the deployment lab, set ' + _LAB_ENV[0])
 
@@ -1084,10 +1092,15 @@ def confluent_service(tmp_path_factory):
         str(pathlib.Path(__file__).parents[1] / component)
         for component in ('confluent_server', 'confluent_client'))
 
+    # The node definitions carry BMC passwords, so they go over stdin rather
+    # than argv, which any local user can read out of ps or /proc for the life
+    # of the process. Same reason the inventory itself is a file.
     service = subprocess.Popen(
-        [sys.executable, str(support), socketpath, json.dumps(nodes),
-         str(logdirectory)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+        [sys.executable, str(support), socketpath, str(logdirectory)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, env=env, text=True)
+    service.stdin.write(json.dumps(nodes))
+    service.stdin.close()
     running = _Service(service, logdirectory)
     try:
         deadline = time.monotonic() + 60

@@ -3,7 +3,8 @@
 # These need no hardware and no credentials that matter, so this is the
 # inventory to point continuous integration at:
 #
-#   CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml pytest -m hardware
+#   CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml \
+#       pytest -m hardware --run-hardware
 #
 # Nothing has to be started by hand: the redfish_mockups fixture serves each
 # mockup: named below on the port in its address, and stops it afterwards. It
