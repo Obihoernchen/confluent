@@ -91,6 +91,10 @@ _CFM_CLASS_MUTABLES = ('_attribwatchers', '_nodecollwatchers', '_notifierids')
 
 _UNSET = object()
 
+# Connected BMC clients, keyed by device name. See the redfish_command fixture
+# for why these are reused rather than built per test.
+_REDFISH_CLIENTS = {}
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -392,17 +396,28 @@ async def redfish_command(redfish_target):
     think it is. Anything relying on identity needs a pinned fingerprint, the
     way confluent itself does it.
 
-    aiohmi has no Redfish logout, so each test leaves a session behind. BMC
-    session timeouts are short (300s on the XCC this was written against), so
-    this is self-correcting, but keep the tier small rather than opening one
-    session per assertion.
+    One client per device per process, not per test. aiohmi has no Redfish
+    logout, so every client that gets built leaves a session behind until the
+    BMC times it out. Building one per test exhausted a real XCC part way
+    through a run: later reads that open a secondary connection failed with an
+    AttributeError on a None web connection, which looks like a confluent bug
+    and is not one.
+
+    Caching is safe because the client holds no persistent aiohttp session.
+    Each request opens and closes its own, so the client is not bound to the
+    event loop it was created in and can be reused by tests that each get a
+    fresh one. Under xdist the cache is per worker, which with one device per
+    worker still comes to one session per device.
     """
     from aiohmi.redfish.command import Command
 
-    host, port = _split_port(redfish_target['address'])
-    return await Command.create(host, redfish_target['user'],
-                                redfish_target.get('password'),
-                                verifycallback=lambda cert: True, port=port)
+    key = redfish_target.get('name', redfish_target['address'])
+    if key not in _REDFISH_CLIENTS:
+        host, port = _split_port(redfish_target['address'])
+        _REDFISH_CLIENTS[key] = await Command.create(
+            host, redfish_target['user'], redfish_target.get('password'),
+            verifycallback=lambda cert: True, port=port)
+    return _REDFISH_CLIENTS[key]
 
 
 @pytest.fixture

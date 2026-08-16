@@ -1,4 +1,4 @@
-"""Read-only Redfish checks against a real BMC.
+"""System identity and state: the smallest useful checks against a real BMC.
 
 The first tests in the hardware tier. They exist to catch the class of
 regression that no amount of mocking finds: real firmware answering

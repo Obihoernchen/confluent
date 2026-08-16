@@ -46,6 +46,29 @@ tests/
 There are deliberately no `__init__.py` files here: adding them would create a third importable package name
 alongside the two `confluent` namespace packages.
 
+### Naming test files
+
+`test_<transport>_<subsystem>.py`, for example `test_redfish_firmware.py`. The transport comes first because the
+same subsystem will eventually be tested over more than one (`test_ipmi_firmware.py`, `test_pdu_outlets.py`).
+
+**Do not put the safety level in the filename.** It already lives in the marker, which is what actually gates the
+test, and `-m readonly` selects on it. A filename that says `readonly` is a second copy of that fact which goes
+stale the day the file gains a test at another level. Organise by subsystem instead: subsystems are stable, and
+when a BMC misbehaves you want "the sensor tests", not "the read-only tests".
+
+Two shapes are worth keeping distinct:
+
+- **A sweep**, parametrized over many operations, asserting one property that holds for all of them.
+  `test_redfish_reads.py` is this: every read either answers or refuses with a reason. Parametrizing gives one
+  result line per operation per device, so the pass and refuse pattern across a fleet is readable straight from
+  the summary, without a hand-written report.
+- **Subsystem files** for invariants specific to one area, where the assertion is about meaning rather than shape.
+  `test_redfish_firmware.py` is this: a category must filter rather than return everything, a version must not
+  carry a status bit as a digit.
+
+Reach for the sweep when the same question is being asked of many operations, and a subsystem file when a
+particular answer has to be checked.
+
 ## Markers
 
 | marker | what it means | how to enable |
@@ -209,6 +232,12 @@ All in `conftest.py`.
   and must never be committed. Do not run the hardware tier with `--showlocals`, which would print the password
   into a failure report. Certificates are accepted unverified, so these tests confirm the BMC answers, not that it
   is the BMC you meant.
+
+  One client is built per device per process, not per test. aiohmi has no Redfish logout, so each client leaves a
+  session behind until the BMC times it out, and building one per test exhausted a real XCC part way through a
+  run: later reads that open a secondary connection then failed with an AttributeError that looks like a confluent
+  bug and is not one. Reuse is safe because the client opens and closes an aiohttp session per request rather than
+  holding one, so it is not bound to the event loop it was created in.
 
 Both the `configmanager` and `pluginmap` fixtures work by patching module globals, because that is how the code
 under test stores its state. Restoration is therefore a correctness property of the suite, not a nicety: a leak
