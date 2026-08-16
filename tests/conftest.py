@@ -102,6 +102,16 @@ _CFM_CLASS_MUTABLES = ('_attribwatchers', '_nodecollwatchers', '_notifierids')
 
 _UNSET = object()
 
+# Every method an inventory may list devices under, and the only top level keys
+# it may carry beside defaults.
+_KINDS = sorted({kind for group in _TARGET_FIXTURES.values() for kind in group})
+
+# Kinds that actually got as far as running a test this session. --require-target
+# is checked against this rather than against the inventory, so that a device
+# named but never reached, because a simulator or a container runtime is
+# missing, fails the run rather than skipping it.
+_EXECUTED_KINDS = set()
+
 # Connected BMC clients, keyed by device name. See the redfish_command fixture
 # for why these are reused rather than built per test.
 _REDFISH_CLIENTS = {}
@@ -139,6 +149,12 @@ def pytest_addoption(parser):
         '--run-hardware', action='store_true', default=False,
         help='Let the hardware tier run. An inventory alone does not: it says '
              'what the devices are, this says they may be touched.')
+    parser.addoption(
+        '--require-target', action='append', default=[], metavar='METHOD',
+        help='Fail the run unless at least one test ran against a device of '
+             'this method. Repeatable. For continuous integration, where a '
+             'missing device, simulator or container runtime otherwise skips '
+             'its way to a green run that tested nothing.')
     parser.addoption(
         '--run-lab', action='store_true', default=False,
         help='Let the deployment lab tier run. Same two-key reasoning as '
@@ -183,6 +199,48 @@ def _device_known_failures(item):
     return {}
 
 
+def _device_kind(item):
+    """The method of the device this test was parametrized on, if any."""
+    callspec = getattr(item, 'callspec', None)
+    if callspec is None:
+        return None
+    for value in callspec.params.values():
+        if isinstance(value, dict) and 'address' in value:
+            return value.get('method')
+    return None
+
+
+def pytest_runtest_call(item):
+    # Called only when a test body actually runs, so a device skipped for want
+    # of a simulator never counts. That is the distinction --require-target
+    # exists to make.
+    kind = _device_kind(item)
+    if kind:
+        _EXECUTED_KINDS.add(kind)
+
+
+def _unmet_requirements(config):
+    return sorted({kind for kind in config.getoption('require_target')
+                   if kind not in _EXECUTED_KINDS})
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _unmet_requirements(session.config):
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    unmet = _unmet_requirements(config)
+    if unmet:
+        terminalreporter.write_sep(
+            '=', 'no test ran against: {0}'.format(', '.join(unmet)),
+            red=True, bold=True)
+        terminalreporter.write_line(
+            'A device of each --require-target method has to be reached for '
+            'this run to mean anything. Check the inventory names one, and '
+            'that whatever stands in for it is installed.')
+
+
 def _safety_level(item):
     """The one safety marker on a test, or None if that is not the case."""
     declared = [name for name in _SAFETY_LEVELS if name in item.keywords]
@@ -192,6 +250,13 @@ def _safety_level(item):
 
 
 def pytest_configure(config):
+    unknown = sorted(set(config.getoption('require_target')) - set(_KINDS))
+    if unknown:
+        raise pytest.UsageError(
+            '--require-target must name a hardwaremanagement method, and {0} '
+            'is not one of {1}'.format(
+                ', '.join(unknown), ', '.join(_KINDS)))
+
     # confluent.messages reads /etc/confluent/service.cfg at import time (it
     # calls cfgfile.get_option at module scope), so neutralize the config
     # before any test module imports it. A stray service.cfg on a developer
@@ -231,6 +296,18 @@ def pytest_collection_modifyitems(config, items):
     # replaces the first and stops being tested through the CLI, while the run
     # still reports a full pass. Listing one machine under two methods is a
     # reasonable thing to want; it just needs two names.
+    # A section name that is not a method is refused rather than ignored.
+    # redfih: instead of redfish: used to describe no devices at all, and a run
+    # that reaches no device is a run of skips, which reports green. The
+    # inventory is a file someone edits by hand, so a typo in it is the
+    # expected mistake rather than an unlikely one.
+    unknown = sorted(set(_inventory()) - set(_KINDS) - {'defaults'})
+    if unknown:
+        raise pytest.UsageError(
+            'inventory has no such section as {0}. Sections are named after '
+            'hardwaremanagement methods: {1}'.format(
+                ', '.join(repr(name) for name in unknown), ', '.join(_KINDS)))
+
     duplicates = _duplicate_target_names()
     if duplicates:
         raise pytest.UsageError(
@@ -955,15 +1032,26 @@ class _Drained:
             self._failure = caught
 
     def check(self):
-        """Refuse to carry on with a reader that has stopped.
+        """Only a live process with a live reader counts as healthy.
 
-        The reader ending while the process runs is not a small problem. It
-        collects nothing further, so every check built on this output keeps
-        reporting a clean process for the rest of the session: a guard that
-        fails silently is worse than no guard, because the run still says yes.
+        Both halves matter. A reader that ends collects nothing further, so
+        every check built on this output keeps reporting a clean process for
+        the rest of the session, and a guard that fails silently is worse than
+        no guard because the run still says yes.
+
+        A process that has died is the same problem seen from the other end,
+        and it used to pass here. It leaves nothing to complain about, so the
+        checks stay quiet, while the tools that talk to it fail to connect and
+        say so in a way a caller reads as the device refusing an operation.
+        The tier would then skip its way to green over a service that is gone.
         """
-        if self.process.poll() is not None or self._reader.is_alive():
+        if self.process.poll() is None and self._reader.is_alive():
             return
+        if self.process.poll() is not None:
+            pytest.fail('{0} exited with {1} while the tests were still '
+                        'running:\n{2}'.format(
+                            self._what, self.process.returncode,
+                            self.output() or '(it said nothing)'))
         pytest.fail(
             'nothing is reading {0} any more, so nothing it says from here on '
             'would be seen: {1}'.format(

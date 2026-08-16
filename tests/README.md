@@ -98,6 +98,21 @@ The marker plus `--run-hardware` is the coarse gate. Per-target precision comes 
 test asking for `ipmi_target` is skipped when the inventory names no IPMI device, so configuring one BMC does not
 enable tests for equipment that is not attached.
 
+**Skipping is the right answer locally and the wrong one in CI.** A run with no device, a missing `ipmi_sim` or no
+container runtime skips everything and exits 0, which reads as a pass. `--require-target=<method>`, repeatable,
+fails the run unless a test actually reached a device of that method:
+
+```sh
+CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml \
+python3 -m pytest -m hardware --run-hardware --require-target=ipmi
+```
+
+It counts test bodies that ran, not devices the inventory names, so a device configured but never reached fails
+rather than skips. That is the difference between a CI job that proves something and one that is merely green.
+
+A section name that is not a `hardwaremanagement.method` is refused at collection for the same reason: `redfih:`
+instead of `redfish:` described no devices at all and ended in a green run of nothing but skips.
+
 ### Safety levels
 
 Hardware may be in use, so what a test is allowed to do to a device is controlled explicitly. Each level includes
@@ -385,8 +400,8 @@ All in `conftest.py`.
   configured, and the certificate it presents is generated per run rather than committed.
 - **`redfish_command`** returns a connected aiohmi Redfish client, one per device in the inventory. Credentials
   come from that file and must never be committed. Do not run the hardware tier with `--showlocals`, which would
-  print the password into a failure report. Certificates are accepted unverified, so these tests confirm the BMC answers, not that it
-  is the BMC you meant.
+  print the password into a failure report. Certificates are accepted unverified, so these tests confirm the BMC
+  answers, not that it is the BMC you meant.
 
   One client is built per device per process, not per test. aiohmi has no Redfish logout, so each client leaves a
   session behind until the BMC times it out, and building one per test exhausted a real XCC part way through a

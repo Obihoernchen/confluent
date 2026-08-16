@@ -104,8 +104,14 @@ async def test_categories_are_not_all_the_whole_inventory(redfish_command,
                                  await _firmware(redfish_command, category)}
         except (exc.UnsupportedFunctionality, exc.RedfishError):
             continue
-    if not answers:
-        pytest.skip('device supports no firmware category')
+    if len(answers) < 2:
+        # One category cannot show a filter being ignored. A device that
+        # supports exactly one and answers it with the whole inventory is
+        # behaving correctly, and failing it here would be this test calling a
+        # legitimate device broken, which is worse than not checking.
+        pytest.skip('{0} firmware categories answered, need two to tell a '
+                    'filter from a device with one category'.format(
+                        len(answers)))
 
     whole = [name for name, selected in answers.items()
              if selected == everything]
