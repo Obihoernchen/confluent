@@ -1015,7 +1015,15 @@ def run_cli(confluent_service):
             + [str(argument) for argument in arguments],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=env, text=True, timeout=timeout)
-        return completed.returncode, completed.stdout.strip()
+        output = completed.stdout.strip()
+        # Echoed to the test's own stdout so a run can be read as a transcript
+        # of what the tools actually printed, which is the whole subject of
+        # this tier. pytest captures it, so it costs a passing run nothing and
+        # is shown on failure; -rA shows it for passing tests too, and -s live.
+        print('$ {0} {1}\n{2}'.format(
+            tool, ' '.join(str(argument) for argument in arguments),
+            output or '(no output)'))
+        return completed.returncode, output
 
     return invoke
 

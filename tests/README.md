@@ -205,6 +205,10 @@ invokes the tools from the source tree against it. Two things make this cheap:
 
 `tests/support/confluentservice.py` is that subprocess. It is not a test module.
 
+`run_cli` echoes each invocation and its output to the test's own stdout, so a run reads as a transcript of what
+the tools actually printed. pytest captures it: it costs a passing run nothing, appears automatically under
+"Captured stdout call" when a test fails, and `-rA` shows it for passing tests too. `-s` shows it live.
+
 Assertions are about output shape rather than values, since power state, firmware versions and inventory differ
 per machine. A device may refuse a command it does not support, provided it explains itself: an unsupported
 identify light is a skip, an unexplained failure is a failure. That is the same contract the protocol-level sweep
