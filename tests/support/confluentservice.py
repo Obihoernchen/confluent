@@ -6,8 +6,10 @@ configmanager's module globals with the fixtures that reset them, and would
 have to run its socket in whichever event loop happened to be current. A
 separate process shares nothing and is closer to how confluent actually runs.
 
-Reads a socket path and a directory to log into from argv, and the node
-definitions, {nodename: {attribute: value}}, as JSON on stdin. The node
+Reads a socket path and a working directory from argv, and the node
+definitions, {nodename: {attribute: value}}, as JSON on stdin. The datastore
+and the logs go under that directory, which the fixture owns, so nothing is
+left behind in /tmp when the run ends. The node
 definitions hold BMC passwords, and argv is world readable through ps and
 /proc, which is the same reason the inventory is a file rather than a set of
 command line options. Prints READY on stdout once the socket is accepting, so
@@ -22,31 +24,34 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 
 
 # The socket listener task, see run() for why it is kept here.
 _listener = None
 
 
-def _configure(logdirectory):
+def _configure(directory):
     from confluent.config import configmanager as cfm
 
-    cfm.ConfigManager._cfgdir = tempfile.mkdtemp(prefix='confluent-test-cfg-')
+    cfgdirectory = os.path.join(directory, 'cfg')
+    os.makedirs(cfgdirectory, exist_ok=True)
+    cfm.ConfigManager._cfgdir = cfgdirectory
     cfm.statelessmode = True
     cfm._cfgstore = None
     cfm.init(stateless=True)
     # Audit and trace logging write here. Left at the default, the service
     # cannot write to /var/log/confluent as an ordinary user and every request
-    # raises PermissionError from a background task. Given by the fixture
-    # rather than made here, so that the parent knows where to read it and so
-    # it lands somewhere pytest cleans up.
+    # raises PermissionError from a background task. Under the fixture's
+    # directory rather than a mkdtemp of its own, so the parent knows where to
+    # read it and pytest is the one that cleans it up.
+    logdirectory = os.path.join(directory, 'log')
+    os.makedirs(logdirectory, exist_ok=True)
     cfm.set_global('logdirectory', logdirectory)
     return cfm
 
 
-async def main(socketpath, nodes, logdirectory):
-    cfm = _configure(logdirectory)
+async def main(socketpath, nodes, directory):
+    cfm = _configure(directory)
     cfg = cfm.ConfigManager(None)
     await cfg.set_node_attributes(nodes, autocreate=True)
 

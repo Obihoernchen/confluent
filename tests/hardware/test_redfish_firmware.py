@@ -1,6 +1,6 @@
 """Firmware inventory invariants that a plain read does not check.
 
-The sweep in test_redfish_reads.py establishes that firmware inventory can be
+The sweep in test_bmc_reads.py establishes that firmware inventory can be
 read at all. These are the properties that were actually wrong in practice and
 that only real firmware exposes.
 """
@@ -77,3 +77,39 @@ async def test_every_entry_is_named(firmware_inventory):
     unnamed = [repr(entry) for entry in firmware_inventory
                if not str(entry[0]).strip()]
     assert unnamed == [], 'firmware entries with no name: {0}'.format(unnamed)
+
+
+async def test_categories_are_not_all_the_whole_inventory(redfish_command,
+                                                          firmware_inventory):
+    """A filter that returns everything for every category is not filtering.
+
+    The subset check above cannot see this. Asking for one category and being
+    handed the lot satisfies it perfectly, which is precisely the shape of a
+    filter that ignores its argument, and that was the failure the file set out
+    to catch. Telling them apart needs more than one category in view at once,
+    so it needs its own test.
+
+    A device whose firmware really is all one category is not a defect, so this
+    only concludes anything where there is more than one entry to divide.
+    """
+    everything = {entry[0] for entry in firmware_inventory}
+    if len(everything) < 2:
+        pytest.skip('only {0} firmware entry, nothing to divide'.format(
+            len(everything)))
+
+    answers = {}
+    for category in CATEGORIES:
+        try:
+            answers[category] = {entry[0] for entry in
+                                 await _firmware(redfish_command, category)}
+        except (exc.UnsupportedFunctionality, exc.RedfishError):
+            continue
+    if not answers:
+        pytest.skip('device supports no firmware category')
+
+    whole = [name for name, selected in answers.items()
+             if selected == everything]
+    assert whole != list(answers), (
+        'every category answered with the whole inventory ({0} entries), so '
+        'the category argument is being ignored: {1}'.format(
+            len(everything), ', '.join(sorted(answers))))

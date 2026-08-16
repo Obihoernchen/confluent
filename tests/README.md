@@ -307,6 +307,9 @@ A replayed device answers reads and holds writes in memory, but has no state mac
 override can be set and read back, while a reset is accepted and changes nothing. Read-only and reversible
 property tests suit it; power and reset tests do not.
 
+An entry missing `address` or `user` is refused at collection rather than skipped. It used to be dropped in
+silence, so a run reported a full pass over the devices it did read and never mentioned the one it did not.
+
 Entries may carry a `known_failures` mapping of nodeid substring to reason, for whatever a given device cannot
 satisfy. Those tests still run and report as xfail rather than being skipped or deleted, so one that starts
 passing shows up as an unexpected pass and the entry can go. Keep two kinds of entry apart: a gap in the replay is

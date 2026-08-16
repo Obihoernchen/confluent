@@ -71,10 +71,20 @@ BUG_SHAPES = (AttributeError, TypeError, NotImplementedError, KeyError,
               IndexError, StopIteration, StopAsyncIteration,
               asyncio.TimeoutError)
 
-# What a device is allowed to answer with instead of a result.
-EXPECTED_REFUSALS = (exc.UnsupportedFunctionality, exc.RedfishError,
-                     exc.IpmiException, exc.InvalidParameterValue,
-                     exc.TemporaryError)
+# What a device is allowed to answer with instead of a result: aiohmi's own
+# exception hierarchy, and nothing else. PyghmiException is its base, so
+# naming it covers the specific ones and the bare base a handler sometimes
+# raises directly; TemporaryError sits beside the hierarchy rather than under
+# it, hence the second entry.
+#
+# The point of drawing the line at the library's own exceptions is what falls
+# outside it. A RuntimeError, an OSError from a socket, a ValueError out of a
+# parser: none of those is a device declining anything, they are the library
+# or confluent coming apart, and each reaches a user as "Unexpected Error".
+# This used to accept any exception at all that carried a non-empty message,
+# which made the sweep report green for exactly the class of defect it exists
+# to find.
+EXPECTED_REFUSALS = (exc.PyghmiException, exc.TemporaryError)
 
 # A few reads take an argument before they will do anything useful.
 READ_ARGUMENTS = {
@@ -108,12 +118,17 @@ async def test_read_answers_or_refuses_with_a_reason(bmc_command,
             '{0} was refused with an empty message, so a user is told '
             'nothing'.format(operation))
     except Exception as caught:  # the classification is what this test is for
-        # A bare Exception reaches a user as "Unexpected Error" whatever it
-        # carries, which is poor, but a real reason still tells them
-        # something. An empty one tells them nothing at all.
-        assert str(caught).strip(), (
-            '{0} failed with a bare {1} carrying no message, so a user is '
-            'told nothing'.format(operation, type(caught).__name__))
+        # Anything outside the refusals above is a failure, message or not.
+        # This used to pass whatever carried a non-empty string, on the
+        # argument that a reason tells a user something. It does not tell them
+        # enough: a RuntimeError, a socket error or an unexpected error out of
+        # a library all reach them as "Unexpected Error" just the same, and
+        # accepting them here meant the sweep reported green for exactly the
+        # class of defect it exists to find. A device that means to refuse has
+        # a way to say so.
+        pytest.fail('{0} raised {1}, which is neither a result nor a refusal '
+                    'this device is entitled to make: {2}'.format(
+                        operation, type(caught).__name__, caught or '(no message)'))
 
 
 async def test_client_implements_what_confluent_calls(bmc_command):

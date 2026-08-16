@@ -416,8 +416,17 @@ def _targets(kind):
                 "inventory device {0!r} has allow: {1!r}, expected one of "
                 "{2}".format(merged.get('name', merged.get('address')), allow,
                              ', '.join(_SAFETY_LEVELS)))
-        if merged.get('address') and merged.get('user'):
-            targets.append(merged)
+        missing = [field for field in ('address', 'user')
+                   if not merged.get(field)]
+        if missing:
+            # Refused rather than skipped. An entry with a typo used to be
+            # dropped in silence, so the run reported a full pass over the
+            # devices it did read and never mentioned the one it did not.
+            raise pytest.UsageError(
+                'inventory device {0!r} under {1} is missing {2}'.format(
+                    merged.get('name', merged.get('address', '<unnamed>')),
+                    kind, ' and '.join(missing)))
+        targets.append(merged)
     if kind == 'redfish':
         address = os.environ.get('CONFLUENT_TEST_REDFISH_BMC')
         user = os.environ.get('CONFLUENT_TEST_REDFISH_USER')
@@ -1084,8 +1093,9 @@ def confluent_service(tmp_path_factory):
 
     directory = tmp_path_factory.mktemp('service')
     socketpath = str(directory / 'api.sock')
+    # The service puts its datastore and its logs under here, so both are
+    # pytest's to clean up rather than leaving directories in /tmp per run.
     logdirectory = directory / 'log'
-    logdirectory.mkdir()
     support = pathlib.Path(__file__).parent / 'support' / 'confluentservice.py'
     env = dict(os.environ)
     env['PYTHONPATH'] = os.pathsep.join(
@@ -1096,7 +1106,7 @@ def confluent_service(tmp_path_factory):
     # than argv, which any local user can read out of ps or /proc for the life
     # of the process. Same reason the inventory itself is a file.
     service = subprocess.Popen(
-        [sys.executable, str(support), socketpath, str(logdirectory)],
+        [sys.executable, str(support), socketpath, str(directory)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, env=env, text=True)
     service.stdin.write(json.dumps(nodes))
