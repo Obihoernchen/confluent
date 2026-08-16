@@ -19,6 +19,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -922,6 +923,81 @@ def smm():
     return _hardware_target('CONFLUENT_TEST_SMM')
 
 
+# What a running service may say that means it found something. Matched
+# against everything it writes and against its trace log, which is where
+# sockapi and the plugins put a traceback they caught.
+#
+# Deliberately not here: asyncio's slow callback warning. Debug mode reports
+# every callback over 100ms, and plugin dispatch to a device legitimately
+# takes longer than that, so it says nothing about correctness. It is still
+# shown with the rest of the output when something else fails.
+_SERVICE_COMPLAINTS = (
+    'Traceback (most recent call last)',
+    'Task exception was never retrieved',
+    'was never awaited',
+    'Future exception was never retrieved',
+)
+
+
+class _Service:
+    """A running test service, and what it has said.
+
+    Its output is drained by a thread rather than read on demand. Nothing else
+    reads the pipe once the service is up, and a process whose pipe fills stops
+    dead at the write: tracebacks are exactly what would fill it, so the
+    failure mode without this is the tier hanging precisely when the service
+    has most to report.
+    """
+
+    def __init__(self, process, logdirectory):
+        self.socketpath = None
+        self.logdirectory = logdirectory
+        self._process = process
+        self._said = []
+        self._reader = threading.Thread(target=self._drain, daemon=True)
+        self._reader.start()
+
+    def _drain(self):
+        for line in self._process.stdout:
+            self._said.append(line)
+
+    def saw(self, text):
+        return any(text in line for line in self._said)
+
+    def mark(self):
+        """Where the output has reached, to compare against later."""
+        return len(self._said), self._tracelog()
+
+    def since(self, marker):
+        """Everything said, and logged, since a mark."""
+        said = ''.join(self._said[marker[0]:])
+        logged = self._tracelog()[len(marker[1]):]
+        return '\\n'.join(part for part in (said, logged) if part.strip())
+
+    def complaints(self, marker):
+        """Whichever complaints turned up since a mark, if any."""
+        fresh = self.since(marker)
+        found = [text for text in _SERVICE_COMPLAINTS if text in fresh]
+        # A trace log that grew at all counts, whatever it holds: nothing
+        # writes to it but a handler reporting something it caught.
+        if len(self._tracelog()) > len(marker[1]) and not found:
+            found.append('an entry in the trace log')
+        return found, fresh
+
+    def output(self):
+        return ''.join(self._said)
+
+    def _tracelog(self):
+        try:
+            return (self.logdirectory / 'trace').read_text(errors='replace')
+        except OSError:  # not written to yet, which is the healthy case
+            return ''
+
+    def close(self):
+        self._reader.join(timeout=5)
+        self._process.stdout.close()
+
+
 def _service_nodes():
     """The inventory as confluent node definitions, keyed by device name.
 
@@ -957,13 +1033,16 @@ def confluent_service(tmp_path_factory):
     grants a connection from the uid the service runs as, which is the same
     user running the tests, so no password, PAM or certificate is involved.
 
-    Yields the socket path, or skips when no device is configured.
+    Yields a _Service, or skips when no device is configured.
     """
     nodes = _service_nodes()
     if not nodes:
         pytest.skip('no device configured: nothing for a service to manage')
 
-    socketpath = str(tmp_path_factory.mktemp('service') / 'api.sock')
+    directory = tmp_path_factory.mktemp('service')
+    socketpath = str(directory / 'api.sock')
+    logdirectory = directory / 'log'
+    logdirectory.mkdir()
     support = pathlib.Path(__file__).parent / 'support' / 'confluentservice.py'
     env = dict(os.environ)
     env['PYTHONPATH'] = os.pathsep.join(
@@ -971,21 +1050,22 @@ def confluent_service(tmp_path_factory):
         for component in ('confluent_server', 'confluent_client'))
 
     service = subprocess.Popen(
-        [sys.executable, str(support), socketpath, json.dumps(nodes)],
+        [sys.executable, str(support), socketpath, json.dumps(nodes),
+         str(logdirectory)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+    running = _Service(service, logdirectory)
     try:
-        deadline = 60
-        while deadline > 0:
+        deadline = time.monotonic() + 60
+        while not running.saw('READY'):
             if service.poll() is not None:
                 pytest.fail('service exited during startup:\n{0}'.format(
-                    service.stdout.read()))
-            line = service.stdout.readline()
-            if line.strip() == 'READY':
-                break
-            deadline -= 1
-        else:
-            pytest.fail('service never reported ready')
-        yield socketpath
+                    running.output()))
+            if time.monotonic() > deadline:
+                pytest.fail('service never reported ready:\n{0}'.format(
+                    running.output()))
+            time.sleep(0.05)
+        running.socketpath = socketpath
+        yield running
     finally:
         service.terminate()
         try:
@@ -993,7 +1073,7 @@ def confluent_service(tmp_path_factory):
         except subprocess.TimeoutExpired:
             service.kill()
             service.wait(timeout=10)
-        service.stdout.close()
+        running.close()
 
 
 @pytest.fixture
@@ -1039,10 +1119,14 @@ def run_cli(confluent_service):
     """
     root = pathlib.Path(__file__).parents[1]
     env = dict(os.environ)
-    env['CONFLUENT_HOST'] = confluent_service
+    env['CONFLUENT_HOST'] = confluent_service.socketpath
     env['PYTHONPATH'] = os.pathsep.join(
         str(root / component)
         for component in ('confluent_server', 'confluent_client'))
+
+    # Where the service's output had got to before this test ran, so whatever
+    # it says next is attributed here rather than to some later test.
+    marker = confluent_service.mark()
 
     def invoke(tool, *arguments, timeout=120):
         completed = subprocess.run(
@@ -1060,7 +1144,16 @@ def run_cli(confluent_service):
             output or '(no output)'))
         return completed.returncode, output
 
-    return invoke
+    yield invoke
+
+    # A service that logged a traceback found something, whether or not the
+    # client was told. Plenty never reaches one: a failure in a background
+    # task, or one after the response went out. Those are the defects this
+    # tier exists to catch and the only place they surface is here.
+    found, said = confluent_service.complaints(marker)
+    if found:
+        pytest.fail('the service reported {0} while this test ran:\n{1}'.format(
+            ', '.join(found), said))
 
 
 @pytest.fixture

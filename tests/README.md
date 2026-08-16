@@ -205,6 +205,25 @@ invokes the tools from the source tree against it. Two things make this cheap:
 
 `tests/support/confluentservice.py` is that subprocess. It is not a test module.
 
+**A traceback logged by the service fails the test that caused it.** Its output is drained by a thread and its
+trace log is read, and `run_cli` compares both against where they stood before the test ran. That matters because
+plenty of what goes wrong in a service never reaches the client at all: a failure in a background task, or one
+after the response has gone out. Those are the defects this tier exists to find, and nothing else in the suite is
+watching for them. It arrives as an error rather than a failure, since the check runs in teardown, and the
+service's own words are attached to it.
+
+Asyncio's slow callback warning is deliberately not treated as a complaint: debug mode reports every callback over
+100ms and dispatch to a device legitimately takes longer, so it says nothing about correctness. It is still shown
+along with everything else when something does fail.
+
+The service runs with `asyncio` debug on, for the same reasons the in-process tests do. It is the one component in
+the suite that dispatches the way production does, so an unretrieved task exception or an unawaited coroutine there
+is worth more than anywhere else, and both are silent without it.
+
+Draining that output is also what stops the tier hanging. Nothing read the pipe once the service was up, and a
+process whose pipe fills stops dead at the write, so the old failure mode was a hang arriving exactly when the
+service had most to say.
+
 `run_cli` echoes each invocation and its output to the test's own stdout, so a run reads as a transcript of what
 the tools actually printed. pytest captures it: it costs a passing run nothing, appears automatically under
 "Captured stdout call" when a test fails, and `-rA` shows it for passing tests too. `-s` shows it live.

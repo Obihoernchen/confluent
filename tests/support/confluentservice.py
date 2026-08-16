@@ -6,9 +6,14 @@ configmanager's module globals with the fixtures that reset them, and would
 have to run its socket in whichever event loop happened to be current. A
 separate process shares nothing and is closer to how confluent actually runs.
 
-Reads its configuration from argv: a socket path, then a JSON node definition
-mapping of {nodename: {attribute: value}}. Prints READY on stdout once the
-socket is accepting, so the parent knows when to proceed.
+Reads its configuration from argv: a socket path, a JSON node definition
+mapping of {nodename: {attribute: value}}, and a directory to log into. Prints
+READY on stdout once the socket is accepting, so the parent knows when to
+proceed.
+
+Everything it writes afterwards, on stdout or stderr, is read by the fixture
+and held against the test that was running. A service that logs a traceback
+has found something, and nothing else in the suite is watching for it.
 """
 
 import asyncio
@@ -22,7 +27,7 @@ import tempfile
 _listener = None
 
 
-def _configure():
+def _configure(logdirectory):
     from confluent.config import configmanager as cfm
 
     cfm.ConfigManager._cfgdir = tempfile.mkdtemp(prefix='confluent-test-cfg-')
@@ -31,13 +36,15 @@ def _configure():
     cfm.init(stateless=True)
     # Audit and trace logging write here. Left at the default, the service
     # cannot write to /var/log/confluent as an ordinary user and every request
-    # raises PermissionError from a background task.
-    cfm.set_global('logdirectory', tempfile.mkdtemp(prefix='confluent-test-log-'))
+    # raises PermissionError from a background task. Given by the fixture
+    # rather than made here, so that the parent knows where to read it and so
+    # it lands somewhere pytest cleans up.
+    cfm.set_global('logdirectory', logdirectory)
     return cfm
 
 
-async def main(socketpath, nodes):
-    cfm = _configure()
+async def main(socketpath, nodes, logdirectory):
+    cfm = _configure(logdirectory)
     cfg = cfm.ConfigManager(None)
     await cfg.set_node_attributes(nodes, autocreate=True)
 
@@ -69,4 +76,11 @@ async def main(socketpath, nodes):
 
 
 if __name__ == '__main__':
-    asyncio.run(main(sys.argv[1], json.loads(sys.argv[2])))
+    # debug=True for the same reasons the in-process tests set it on their own
+    # loop: a task whose exception nobody retrieved, and a coroutine that was
+    # never awaited, are both silent otherwise, and this is the one component
+    # in the suite that dispatches the way production does. Set here rather
+    # than through PYTHONASYNCIODEBUG, which aiohttp reads for its own purposes
+    # and which changes how the wire is parsed. See the _asyncio_debug fixture.
+    asyncio.run(main(sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]),
+                debug=True)
