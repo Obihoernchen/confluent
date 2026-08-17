@@ -46,6 +46,32 @@ tests/
 There are deliberately no `__init__.py` files here: adding them would create a third importable package name
 alongside the two `confluent` namespace packages.
 
+### When a unit test earns its place
+
+**Reach for the CLI first.** `test_cli_readonly.py` runs the command a user runs, through argument parsing, the
+socket protocol, dispatch, a plugin and the protocol library. It is the interface that has to stay stable anyway,
+so a test written against it survives refactoring underneath, and one test covers every layer at once.
+
+A unit test is worth its maintenance when the CLI cannot reach the input. Three cases, and they are the only ones
+in `tests/unit` today:
+
+- **A pure function over an input domain the device controls.** `aiohmi.util.parse.parse_time` is reachable
+  through `nodeeventlog`, but only with whatever format that BMC emits, and a mockup replays only what was
+  captured. The unit test feeds it ten formats, including the fractional-second one that is currently read as
+  milliseconds. You cannot ask a BMC for that string.
+- **Error paths needing malformed input.** A bad address, a truncated record, a section name with a typo. Devices
+  do not produce these to order.
+- **Code the CLI genuinely cannot reach**, including the framework testing itself.
+
+**What not to write**, because this is the kind that actually costs maintenance: tests that assert *how* something
+is done. Mocking internals, pinning call sequences, reaching into private attributes. They break on every
+refactor, they teach people that failing tests are noise, and they were never evidence the feature worked. If a
+fake webclient is needed to test `Command.get_health`, the mockups already cover it better and one layer higher.
+
+One trap worth naming: do not assert a behaviour you know is wrong so the suite stays green. Fixing the bug would
+then break the test, which is how a suite starts arguing against its own codebase. `test_parse.py` documents the
+fractional-second defect in a docstring and asserts the correct case beside it.
+
 ### Naming test files
 
 `test_<transport>_<subsystem>.py`, for example `test_redfish_firmware.py`. The transport comes first because the
