@@ -42,6 +42,12 @@ def test_service_lists_the_configured_nodes(run_cli, service_node):
     ('nodepower', r'^\S+: (on|off)$'),
     ('nodehealth', r'^\S+: \w+'),
     ('nodeidentify', r'^\S+: (on|off|blink)$'),
+    # Reading the boot override, not setting one. Passing no device is a read:
+    # simple_noderange_command sends an update only when it has an input, and
+    # with none it fetches /boot/nextdevice instead. Confirmed against a device
+    # as well as in the source, by reading the override either side of the call
+    # and checking it did not move. Never give this entry an argument.
+    ('nodesetboot', r'^\S+: (default|cd|network|http|setup|hd|usb|floppy)\b'),
 ])
 def test_state_commands_report_a_usable_value(run_cli, service_node, tool,
                                               pattern):
@@ -70,6 +76,10 @@ def test_state_commands_report_a_usable_value(run_cli, service_node, tool,
     # Never 'clear'. That is the one argument this file must not pass.
     ('nodeeventlog', ()),
     ('nodelicense', ('list',)),
+    # Reading the bmc configuration. An assignment would be a write, so this
+    # entry must stay argument-free: nodeconfig only updates when it is given
+    # something with an '=' in it.
+    ('nodeconfig', ()),
 ])
 def test_read_commands_answer_or_refuse_with_a_reason(run_cli, service_node,
                                                       tool, arguments):

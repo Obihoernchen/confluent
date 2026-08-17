@@ -67,3 +67,11 @@ ipmi:
       # refuses a sensor read shows this; the simulator has no SDR at all, so
       # it shows it every time. Remove once the exit code is set.
       nodesensors: nodesensors exits 0 after reporting a per-node error
+      #
+      # A second tool with the same shape of defect, and a different cause.
+      # confluent_client/bin/nodeconfig accumulates its exit code with |= in
+      # every branch of the read path except the last, which assigns with a
+      # plain =. So an error reading the bmc configuration is discarded by the
+      # system read that follows it and the command exits 0 having printed
+      # what went wrong. Any bmc that refuses one of those reads shows it.
+      nodeconfig: nodeconfig exits 0 after reporting a failed read
