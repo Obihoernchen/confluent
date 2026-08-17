@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import ssl
@@ -170,15 +171,25 @@ def _level_index(level):
     return _SAFETY_LEVELS.index(level)
 
 
-def _device_ceiling(item):
-    """The allow: of whichever device this test was parametrized over."""
+def _device_of(item):
+    """The target this test was parametrized over, if it was.
+
+    One definition of what counts as a device parameter, since three separate
+    copies of this walk drifted apart the moment a fourth field was wanted.
+    """
     callspec = getattr(item, 'callspec', None)
     if callspec is None:
         return None
     for value in callspec.params.values():
         if isinstance(value, dict) and 'address' in value:
-            return value.get('allow', _SAFETY_LEVELS[0])
+            return value
     return None
+
+
+def _device_ceiling(item):
+    """The allow: of whichever device this test was parametrized over."""
+    device = _device_of(item)
+    return None if device is None else device.get('allow', _SAFETY_LEVELS[0])
 
 
 def _device_known_failures(item):
@@ -190,24 +201,14 @@ def _device_known_failures(item):
     these become xfail rather than skip: a listed test that starts passing is
     reported as an unexpected pass and the entry can go.
     """
-    callspec = getattr(item, 'callspec', None)
-    if callspec is None:
-        return {}
-    for value in callspec.params.values():
-        if isinstance(value, dict) and 'address' in value:
-            return value.get('known_failures') or {}
-    return {}
+    device = _device_of(item)
+    return {} if device is None else (device.get('known_failures') or {})
 
 
 def _device_kind(item):
     """The method of the device this test was parametrized on, if any."""
-    callspec = getattr(item, 'callspec', None)
-    if callspec is None:
-        return None
-    for value in callspec.params.values():
-        if isinstance(value, dict) and 'address' in value:
-            return value.get('method')
-    return None
+    device = _device_of(item)
+    return None if device is None else device.get('method')
 
 
 def pytest_runtest_call(item):
@@ -225,7 +226,11 @@ def _unmet_requirements(config):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    if _unmet_requirements(session.config):
+    # Only turn a success into a failure. Overwriting any other status would
+    # flatten an interrupt, a usage error or an empty collection into a plain
+    # 1, and a caller could no longer tell them apart from a run that finished
+    # and failed.
+    if exitstatus == pytest.ExitCode.OK and _unmet_requirements(session.config):
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -362,11 +367,25 @@ def _asyncio_debug(request):
     tier hanging exactly as before, which is what identified the loop itself,
     rather than anything the fixture did, as the problem.
     """
-    marker = request.node.get_closest_marker('asyncio')
-    if marker and marker.kwargs.get('loop_scope') == 'session':
+    if _test_loop_scope(request) == 'session':
         # _asyncio_debug_session has already done it for that loop.
         return
     request.getfixturevalue('_asyncio_debug_function')
+
+
+def _test_loop_scope(request):
+    """Which loop this test will run on, however that was asked for.
+
+    The marker wins where a module sets one, and the ini default decides the
+    rest. Reading only the marker was enough while every session-loop module
+    spelled it the same way, but it made the guard depend on the spelling
+    rather than on the fact, so setting asyncio_default_test_loop_scope would
+    have quietly reintroduced the second loop and the timeouts with it.
+    """
+    marker = request.node.get_closest_marker('asyncio')
+    if marker and 'loop_scope' in marker.kwargs:
+        return marker.kwargs['loop_scope']
+    return request.config.getini('asyncio_default_test_loop_scope') or 'function'
 
 
 @pytest.fixture
@@ -460,12 +479,24 @@ def _inventory():
     path = os.environ.get(_INVENTORY_ENV)
     if not path:
         return {}
+    # expanduser because the documented value is a ~/ path, and only a shell
+    # expands that. A CI env: block or a subprocess list does not, and open()
+    # would then report a missing directory literally named ~.
+    path = os.path.expanduser(path)
     # Imported here rather than at module scope so the rest of the suite does
     # not gain a hard dependency on PyYAML just to collect.
     import yaml
 
     with open(path) as invfile:
-        return yaml.safe_load(invfile) or {}
+        inventory = yaml.safe_load(invfile) or {}
+    if not isinstance(inventory, dict):
+        # Dropping the section name and starting with a list is the natural
+        # mistake, and without this it surfaces as AttributeError on .get from
+        # inside a hook rather than as anything a reader can act on.
+        raise pytest.UsageError(
+            '{0} must be a mapping of sections to devices, and {1} holds a '
+            '{2}'.format(_INVENTORY_ENV, path, type(inventory).__name__))
+    return inventory
 
 
 def _targets(kind):
@@ -605,7 +636,8 @@ def _support(name):
 
 def _port_is_taken(host, port):
     """Whether something already holds this UDP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_DGRAM) as probe:
         try:
             probe.bind((host, port))
         except OSError:
@@ -621,16 +653,18 @@ def ipmi_simulator(tmp_path_factory):
     through untouched, so one inventory can mix real BMCs with a simulated one
     and every fixture can call this without checking first.
 
-    A simulator already listening on the port is left alone and used as it
-    stands. That covers one started by hand, and it covers a second xdist
-    worker arriving for the same device: only the process that started one ever
-    stops it.
+    A simulator this fixture already started is reused, which is what makes
+    ensure() safe to call from several fixtures for the same device. Anything
+    else holding the port is an error rather than something to run against: a
+    bind test cannot tell a simulator from an unrelated process, and quietly
+    testing whatever answers is how a green run comes to mean nothing.
 
     Skips rather than fails when ipmi_sim is not installed, so that an
     inventory naming a simulator is still usable on a machine without it.
     """
     ipmisim = _support('ipmisim')
     started = []
+    ours = set()
 
     def ensure(target):
         if not (target or {}).get('simulator'):
@@ -642,8 +676,14 @@ def ipmi_simulator(tmp_path_factory):
                     _SIMULATOR))
 
         host, port = _split_port(target['address'], _IPMI_PORT)
-        if _port_is_taken(host, port):
+        if (host, port) in ours:
             return
+        if _port_is_taken(host, port):
+            pytest.fail(
+                'something already holds {0}:{1}, and it is not a simulator '
+                'this run started. Whatever it is would be what the IPMI '
+                'tests then talked to, so stop it or give the device another '
+                'port in the inventory.'.format(host, port))
 
         directory = tmp_path_factory.mktemp('ipmisim')
         state = directory / 'state'
@@ -658,6 +698,7 @@ def ipmi_simulator(tmp_path_factory):
             stderr=subprocess.STDOUT, text=True)
         running = _Drained(simulator, _SIMULATOR)
         started.append(running)
+        ours.add((host, port))
         _wait_for_simulator(running, port)
 
     yield ensure
@@ -695,14 +736,21 @@ def _mockup_capture(name):
     return path
 
 
-def _mockup_answers(port):
-    """Whether a Redfish service root is already being served on this port."""
+def _mockup_answers(host, port):
+    """Whether a Redfish service root is already being served there.
+
+    Takes the host rather than assuming loopback, because the container is
+    published on whatever the inventory address named. Probing 127.0.0.1 while
+    serving on ::1 waits out the whole readiness timeout and then reports a
+    healthy server as never having answered.
+    """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
+    literal = '[{0}]'.format(host) if ':' in host else host
     try:
         with urllib.request.urlopen(
-                'https://127.0.0.1:{0}/redfish/v1'.format(port),
+                'https://{0}:{1}/redfish/v1'.format(literal, port),
                 context=context, timeout=2) as answer:
             return answer.status == 200
     except Exception:  # anything at all means not ready
@@ -755,7 +803,7 @@ def _mockup_certificate(directory):
 
 
 def _start_mockup(runtime, container, capture, host, port, certificates):
-    """Serve one capture, replacing anything stale under the same name."""
+    """Serve one capture under a name of this fixture's own."""
     arguments = ['-D', '/mockup', '-s', '-p', '8000',
                  # The server binds its own loopback by default, which a
                  # published port cannot reach from outside the container.
@@ -768,8 +816,6 @@ def _start_mockup(runtime, container, capture, host, port, certificates):
         # more thing an inventory has to get right.
         arguments.append('-S')
 
-    subprocess.run([runtime, 'rm', '-f', container],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     started = subprocess.run(
         [runtime, 'run', '-d', '--name', container,
          '-p', '{0}:{1}:8000'.format(host, port),
@@ -779,15 +825,19 @@ def _start_mockup(runtime, container, capture, host, port, certificates):
          _MOCKUP_IMAGE] + arguments,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if started.returncode:
+        # Not preceded by a force removal any more. The name used to be keyed
+        # on the port alone, so clearing it first could destroy a container
+        # someone else had started, including one still coming up on a port an
+        # inventory happened to share.
         pytest.fail('could not serve the {0} mockup:\n{1}'.format(
             capture.name, started.stdout.strip()))
 
 
-def _wait_for_mockup(runtime, container, port):
+def _wait_for_mockup(runtime, container, host, port):
     """Block until the replayed service answers its root, or say why not."""
     deadline = time.monotonic() + _MOCKUP_READY_TIMEOUT
     while time.monotonic() < deadline:
-        if _mockup_answers(port):
+        if _mockup_answers(host, port):
             return
         time.sleep(0.25)
     logs = subprocess.run([runtime, 'logs', container], stdout=subprocess.PIPE,
@@ -810,9 +860,10 @@ def redfish_mockups(tmp_path_factory):
     inventory naming a capture is still usable without a container runtime.
     """
     started = []
-    certificates = []
+    certificates = None
 
     def ensure(target):
+        nonlocal certificates
         capture_name = (target or {}).get('mockup')
         if not capture_name:
             return
@@ -826,18 +877,22 @@ def redfish_mockups(tmp_path_factory):
                 capture_name, capture))
 
         host, port = _split_port(target['address'])
-        if _mockup_answers(port):
+        if _mockup_answers(host, port):
             return
 
         _mockup_image(runtime)
-        if not certificates:
-            certificates.append(
-                _mockup_certificate(tmp_path_factory.mktemp('mockupcerts')))
+        if certificates is None:
+            certificates = _mockup_certificate(
+                tmp_path_factory.mktemp('mockupcerts'))
 
-        container = 'confluent-test-mockup-{0}'.format(port)
-        _start_mockup(runtime, container, capture, host, port, certificates[0])
+        # Named after what it serves as well as where, so two inventories
+        # reusing a port do not silently replace each other's service, and so
+        # the name cannot collide with one a person started by hand.
+        container = 'confluent-test-mockup-{0}-{1}'.format(
+            re.sub(r'[^A-Za-z0-9_.-]', '-', capture.name), port)
+        _start_mockup(runtime, container, capture, host, port, certificates)
         started.append((runtime, container))
-        _wait_for_mockup(runtime, container, port)
+        _wait_for_mockup(runtime, container, host, port)
 
     yield ensure
 

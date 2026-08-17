@@ -155,6 +155,11 @@ def write_configuration(directory, port, user, password):
                      'PN-TEST-0001')
 
     lanconf = directory / 'lan.conf'
+    # Created 0600 before anything is written to it. The password in here is
+    # the simulator's own rather than a machine's, but this is the same class
+    # of secret the capture script takes the trouble to protect, and relying on
+    # the mode of whatever directory it lands in is not protecting it.
+    lanconf.touch(mode=0o600)
     lanconf.write_text(_lan(port, user, password))
 
     emulation = directory / 'sim.emu'
