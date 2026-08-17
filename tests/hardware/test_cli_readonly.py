@@ -80,6 +80,14 @@ def test_state_commands_report_a_usable_value(run_cli, service_node, tool,
     # entry must stay argument-free: nodeconfig only updates when it is given
     # something with an '=' in it.
     ('nodeconfig', ()),
+    # Each of these three is one subcommand of a tool whose others write. The
+    # subcommand is the whole safety argument, so do not generalise these
+    # entries: upload, attach and detachall write media, create and delete
+    # write storage, and installbmccacert, removebmccacert and signbmccert
+    # write certificates.
+    ('nodemedia', ('list',)),
+    ('nodestorage', ('show',)),
+    ('nodecertutil', ('listbmccacerts',)),
 ])
 def test_read_commands_answer_or_refuse_with_a_reason(run_cli, service_node,
                                                       tool, arguments):
