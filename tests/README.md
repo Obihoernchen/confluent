@@ -512,5 +512,11 @@ the fixtures above instead; that is what they exist for. Split large multi-subsy
 in rather than moving them whole. Prefer tests that execute code over tests that inspect source text.
 
 Hardware tests that write anything must keep the safety properties of whatever harness they came from: an explicit
-list of calls that will never be made, a capture of the prior state written to disk before any write, and a restore
-path that has been shown to work.
+list of calls that will never be made, the prior state captured before any write, and a restore path in a fixture
+teardown that has been shown to work.
+
+The restore runs for a failed assertion, an exception, a timeout and an interrupt, because teardown runs for all of
+them. It does not run if the process dies without unwinding, so a `kill -9` or a host that loses power can leave a
+device changed. Keeping the capture on disk instead would close that window; it was considered and deliberately not
+built, the exposure being seconds per test against one boot override. Revisit it when a writing test lands whose
+change a reboot does not undo, an account or a firmware bank rather than a boot override.
