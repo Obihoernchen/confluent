@@ -65,6 +65,40 @@ def test_state_commands_report_a_usable_value(run_cli, service_node, tool,
     assert re.match(pattern, lines[0]), lines[0]
 
 
+@pytest.mark.parametrize('tool,arguments', [
+    ('nodesensors', ()),
+    # Never 'clear'. That is the one argument this file must not pass.
+    ('nodeeventlog', ()),
+    ('nodelicense', ('list',)),
+])
+def test_read_commands_answer_or_refuse_with_a_reason(run_cli, service_node,
+                                                      tool, arguments):
+    """The CLI counterpart of the protocol sweep in test_bmc_reads.py.
+
+    These three have no single output shape worth pinning: sensors vary per
+    machine, an event log is legitimately empty, and a device without a licence
+    service says so. What does hold for all of them is the contract the sweep
+    applies one layer down, plus one the sweep cannot see.
+
+    A command that fails must say why and must not say "Unexpected Error". And
+    a command that reports success must not have printed an error while doing
+    it: a zero exit with an error in the output is worse than a failure,
+    because `nodesensors n1 && next-step` then runs next-step.
+    """
+    returncode, output = run_cli(tool, service_node, *arguments)
+
+    if returncode != 0:
+        assert output.strip(), '{0} failed and said nothing'.format(tool)
+        assert 'Unexpected' not in output, \
+            '{0} failed with an unexplained error: {1}'.format(tool, output)
+        pytest.skip('device refused {0}: {1}'.format(tool, output))
+
+    errors = [line for line in output.splitlines() if 'Error:' in line]
+    assert errors == [], (
+        '{0} exited 0 after reporting {1}, so a caller checking the exit code '
+        'is told it worked'.format(tool, '; '.join(errors)))
+
+
 def test_inventory_reports_hardware_detail(run_cli, service_node):
     returncode, output = run_cli('nodeinventory', service_node, 'system')
 

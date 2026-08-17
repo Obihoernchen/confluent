@@ -268,6 +268,12 @@ what it did not see.
 the tools actually printed. pytest captures it: it costs a passing run nothing, appears automatically under
 "Captured stdout call" when a test fails, and `-rA` shows it for passing tests too. `-s` shows it live.
 
+Sensors, event logs and licences have no output shape worth pinning, so they are held to the contract the protocol
+sweep uses one layer down, plus one it cannot see: a command that exits zero must not have printed an error while
+doing it. A zero exit carrying an error is worse than a failure, because `nodesensors n1 && next-step` then runs
+next-step. That check found `nodesensors` doing exactly this, recorded as a known failure rather than worked
+around.
+
 Assertions are about output shape rather than values, since power state, firmware versions and inventory differ
 per machine. A device may refuse a command it does not support, provided it explains itself: an unsupported
 identify light is a skip, an unexplained failure is a failure. That is the same contract the protocol-level sweep

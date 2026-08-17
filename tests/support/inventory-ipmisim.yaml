@@ -57,3 +57,13 @@ ipmi:
       # client learns to read the identify state, or if confluent starts
       # refusing what it cannot answer.
       nodeidentify: aiohmi has no get_identify over ipmi, so it answers empty
+      #
+      # Also not the simulator. nodesensors writes a per-node error to stderr
+      # and never touches its exit code, so a read that failed exits 0 and
+      # `nodesensors n1 && next-step` runs next-step. confluent_client/bin/
+      # nodesensors sets exitcode in the top-level error branch but not in the
+      # per-node one, and the top-level branch has `exitcode |= exitcode`,
+      # which is a no-op where it looks like a propagation. Any BMC that
+      # refuses a sensor read shows this; the simulator has no SDR at all, so
+      # it shows it every time. Remove once the exit code is set.
+      nodesensors: nodesensors exits 0 after reporting a per-node error
