@@ -67,14 +67,18 @@ _SAFETY_LEVELS = ('readonly', 'reversible', 'disruptive', 'destructive')
 # values, so the file uses vocabulary that already exists rather than a second
 # taxonomy. Fixtures aggregate them into roles: a test that works against any
 # BMC asks for bmc_target, one that needs Redfish asks for redfish_target.
+#
+# Only the methods a test actually reaches are listed. Roles for enclosures,
+# CDUs, the five PDU backends and the four switch backends were here first and
+# no test ever asked for one, which cost every reader of the inventory schema,
+# the README table and this map the work of keeping eleven methods consistent
+# for equipment nothing drives. Add a role back in the commit that adds the
+# test needing it: _KINDS below is derived from this, so the section name and
+# --require-target start being accepted at the same moment.
 _TARGET_FIXTURES = {
     'redfish_target': ('redfish',),
     'ipmi_target': ('ipmi',),
     'bmc_target': ('redfish', 'ipmi'),
-    'chassis_target': ('enclosure',),
-    'cdu_target': ('cooltera',),
-    'pdu_target': ('deltapdu', 'eatonpdu', 'enlogic', 'geist', 'raritan'),
-    'switch_target': ('cnos', 'enos', 'nxos', 'srlinux'),
 }
 
 # Module-level state in configmanager that a test can reasonably disturb. The

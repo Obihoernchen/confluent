@@ -1,23 +1,15 @@
 """Run a confluent service against a temp datastore, for the CLI tests.
 
 Not a test module. It is executed as a subprocess by the confluent_service
-fixture, which is deliberate: a service in the test process would share
-configmanager's module globals with the fixtures that reset them, and would
-have to run its socket in whichever event loop happened to be current. A
-separate process shares nothing and is closer to how confluent actually runs.
+fixture in tests/conftest.py, whose docstring says why a subprocess rather
+than a service in the test process.
 
 Reads a socket path and a working directory from argv, and the node
-definitions, {nodename: {attribute: value}}, as JSON on stdin. The datastore
-and the logs go under that directory, which the fixture owns, so nothing is
-left behind in /tmp when the run ends. The node
-definitions hold BMC passwords, and argv is world readable through ps and
-/proc, which is the same reason the inventory is a file rather than a set of
-command line options. Prints READY on stdout once the socket is accepting, so
-the parent knows when to proceed.
-
-Everything it writes afterwards, on stdout or stderr, is read by the fixture
-and held against the test that was running. A service that logs a traceback
-has found something, and nothing else in the suite is watching for it.
+definitions, {nodename: {attribute: value}}, as JSON on stdin rather than argv
+because they hold BMC passwords. The datastore and the logs go under that
+directory, which the fixture owns. Prints READY on stdout once the socket is
+accepting, so the parent knows when to proceed, and everything it writes
+afterwards is read by the fixture and held against the test that was running.
 """
 
 import asyncio
@@ -85,11 +77,9 @@ async def main(socketpath, nodes, directory):
 if __name__ == '__main__':
     # stdin is fully consumed before anything else runs, and the parent closes
     # its end straight after writing, so this does not block.
-    # debug=True for the same reasons the in-process tests set it on their own
-    # loop: a task whose exception nobody retrieved, and a coroutine that was
-    # never awaited, are both silent otherwise, and this is the one component
-    # in the suite that dispatches the way production does. Set here rather
-    # than through PYTHONASYNCIODEBUG, which aiohttp reads for its own purposes
-    # and which changes how the wire is parsed. See the _asyncio_debug fixture.
+    # debug=True on the loop, never through PYTHONASYNCIODEBUG: see the
+    # _asyncio_debug_function docstring in tests/conftest.py. This is the one
+    # component in the suite that dispatches the way production does, so an
+    # unretrieved task exception here is worth more than anywhere else.
     asyncio.run(main(sys.argv[1], json.loads(sys.stdin.read()), sys.argv[2]),
                 debug=True)

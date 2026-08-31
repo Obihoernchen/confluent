@@ -46,6 +46,16 @@ tests/
 There are deliberately no `__init__.py` files here: adding them would create a third importable package name
 alongside the two `confluent` namespace packages.
 
+### Where the reasoning lives
+
+**Why a thing is done the way it is belongs in the docstring next to it, and nowhere else.** This file says what
+exists and what you must not do, then points. The inventory files say how to run them and what their entries mean.
+Neither restates a mechanism.
+
+That is not tidiness. A fact written in four places goes stale in four places, and it has: two review rounds of
+this branch produced nine findings, five of them documentation that had come to contradict the code, and none of
+them a defect in a fixture. When a copy of an explanation would be convenient, write a pointer instead.
+
 ### When a unit test earns its place
 
 **Reach for the CLI first.** `test_cli_readonly.py` runs the command a user runs, through argument parsing, the
@@ -184,47 +194,27 @@ redfish:                       # sections are named after
     password: ...
     allow: reversible
 
-enclosure:                     # SMM
-  - name: smm-rack4
-    address: 192.0.2.40
+ipmi:
+  - name: ipmi-lab1
+    address: 192.0.2.20
     password: ...
-    bays: [1, 2]               # per-kind: bays a test may touch
-
-geist:                         # one of five PDU backends
-  - name: pdu-rack4
-    address: 192.0.2.60
-    password: ...
-    outlets: [7, 8]            # per-kind: outlets a test may cycle
-    allow: disruptive
-
-cnos:                          # one of four switch backends
-  - name: sw-lab1
-    address: 192.0.2.80
-    password: ...
-    ports: [Ethernet1/1]       # per-kind: ports a test may flap
+    simulator: true            # stand in for it rather than contacting one
 ```
 
-Sections are named after confluent's own `hardwaremanagement.method` values, so the file uses vocabulary that
-already exists rather than a second taxonomy. Recognised sections are `redfish`, `ipmi`, `enclosure`, `cooltera`,
-the PDU backends (`deltapdu`, `eatonpdu`, `enlogic`, `geist`, `raritan`) and the switch backends (`cnos`, `enos`,
-`nxos`, `srlinux`).
-
-Per-kind keys such as `bays`, `outlets` and `ports` are both configuration and fencing: a test may only touch what
-is listed.
-
-Fixtures aggregate methods into roles, so a test asks for the broadest one it genuinely works against:
+`redfish` and `ipmi` are the only sections a run accepts, because they are the only equipment any test drives.
+A section for enclosures, CDUs, PDUs or switches is a typo until a test needs one, and is refused as such.
+`_TARGET_FIXTURES` in `conftest.py` is where a method is added, and doing it there makes the section name and
+`--require-target` legal at the same moment.
 
 An entry may also carry `simulator: true`, which asks for a simulated device to be started on the port in its
 address rather than a real one being contacted. Only `ipmi` supports it today. See "Testing without hardware".
+
+Fixtures aggregate methods into roles, so a test asks for the broadest one it genuinely works against:
 
 | fixture | methods |
 |---|---|
 | `redfish_target`, `ipmi_target` | that one method |
 | `bmc_target` | `redfish`, `ipmi` |
-| `chassis_target` | `enclosure` |
-| `cdu_target` | `cooltera` |
-| `pdu_target` | the five PDU backends |
-| `switch_target` | the four switch backends |
 
 Tests run once per matching device and the test ID names the machine, so a failure reads
 `test_boot_device_is_reported[openbmc-artemis]`. Credentials in a file also stay out of the command line, where
@@ -321,12 +311,9 @@ The IPMI one needs `ipmi_sim`, from OpenIPMI's lanserv tools (`OpenIPMI-lanserv`
 one needs podman or docker, and pulls DMTF's mockup server image on first use. Where neither is present the tests
 skip rather than fail, so an inventory naming a stand-in stays usable on a machine that cannot run it.
 
-Neither fixture will run against something it cannot identify. Anything else answering on the port aborts the run,
-naming it: whatever it is would be what the tests then read, and the results would be reported against the device
-the inventory names. What counts as identified differs, because a process on a UDP port says nothing about itself
-while a container carries a name. `ipmi_simulator` therefore reuses only a simulator this run started, and a
-leftover from an earlier run aborts; `redfish_mockups` reuses any container named for this capture on this port,
-including one an earlier run left behind, and clears it first if it has since stopped.
+Neither fixture will run against something it cannot identify, so anything else answering on the port aborts the
+run rather than being read as the device the inventory names. Give a stand-in you start by hand a port no
+inventory uses. The two differ in what they can identify, for reasons in their docstrings.
 
 Neither is a substitute for the other, and the difference is worth keeping in mind when reading a green run:
 
@@ -334,8 +321,8 @@ Neither is a substitute for the other, and the difference is worth keeping in mi
   that machine selects. That is why captures beat emulators, and why the vendor captures are worth keeping even
   though they cannot be published.
 - **`ipmi_sim` answers from a model of a BMC that OpenIPMI wrote.** It proves the session comes up and every read
-  path is reached, and it proves nothing about any vendor. Nothing here selects an OEM handler, and no test should
-  be written that assumes one. `tests/support/ipmisim.py` describes the machine it presents.
+  path is reached, and it proves nothing about any vendor. Nothing here selects an OEM handler, and no test may
+  assume one. `tests/support/ipmisim.py` describes the machine it presents and what that is worth.
 
 What the simulator does not implement is recorded as `known_failures` in its inventory rather than worked around,
 so those tests still run and would report an unexpected pass if a later `ipmi_sim` grew the feature. It has no
@@ -347,14 +334,8 @@ simulator cannot have 623 because binding it takes privileges no test run should
 
 `tests/support/capture-mockups.py` captures a device, running DMTF's Redfish-Mockup-Creator from their published
 container so there is nothing to clone or install. It prunes the specification documents afterwards, since
-confluent never requests them. Its docstring carries the details. Serve a capture with DMTF's mockup server:
-
-```sh
-podman run -d -p 8451:8000 --security-opt label=disable \
-    -v <mockup>:/mockup:ro -v <certs>:/certs:ro \
-    docker.io/dmtf/redfish-mockup-server:latest \
-    -D /mockup -X -s --cert /certs/cert.pem --key /certs/key.pem
-```
+confluent never requests them. Its docstring carries the details, and `tests/support/mockups/README.md` has the
+command for serving one by hand.
 
 A replayed device answers reads and holds writes in memory, but has no state machine behind an action: a boot
 override can be set and read back, while a reset is accepted and changes nothing. Read-only and reversible
@@ -395,61 +376,32 @@ deployment would blow straight through.
 
 ## Fixtures
 
-All in `conftest.py`.
+All in `conftest.py`, where each one's docstring carries the reasoning. This is the index: what it gives you, and
+what you have to know before reaching for it.
 
-- **`configmanager`** gives a `ConfigManager` pointed at a temp directory with `statelessmode` on, so
-  `_bg_sync_to_file` and `_sync_to_file` both return early: no DBM file is opened and no background writer thread
-  starts. Module globals (`_cfgstore`, `statelessmode`, `_masterkey`, `_txcount`, `_ready` and friends) are
-  snapshotted and restored, because the datastore is module state rather than instance state.
-- **`confluent_cfgdir`** is the same isolation without the manager, for tests that want to assert about the
-  directory itself.
-- **`pluginmap`** stubs `core.pluginmap` and rebuilds the route tree via `core._init_core()`. Do not call
-  `core.load_plugins()` from a test: it mutates `sys.path`, imports every plugin by bare module name (pysnmp,
-  asyncssh, aiohttp, EfiCompressor), registers the affluent plugin, and is not safe to call twice.
-- **`_isolate_service_cfg`** (autouse) keeps a real `/etc/confluent/service.cfg` out of the run.
-  `confluent.messages` calls `cfgfile.get_option` at module scope, so this is also done once in `pytest_configure`
-  before anything imports it.
-- **`_collect_garbage`** (autouse) forces a collection after each test, so unawaited-coroutine warnings are blamed
-  on the test that caused them rather than some later one.
-- **`_reset_noderange_cache`** (autouse) clears `noderange.lastnoderange`. Building any range populates it, and
-  `ReverseNodeRange` short-circuits against it, so without this an abbreviation result would depend on whether an
-  earlier test happened to evaluate a matching range.
-- **`ipmi_command`** returns a connected aiohmi IPMI client, and **`bmc_command`** returns whichever client the
-  device speaks, for tests that work either way.
+| fixture | gives you |
+|---|---|
+| `configmanager` | a `ConfigManager` on a temp directory, stateless, nothing written to disk |
+| `confluent_cfgdir` | the same isolation without the manager, for asserting about the directory |
+| `pluginmap` | an empty plugin map and a freshly built route tree |
+| `confluent_service`, `run_cli` | a real service on a temp socket, and the `node*` tools run against it |
+| `service_node`, `service_nodes` | the name that service knows a device by, or all of them at once |
+| `redfish_command`, `ipmi_command`, `bmc_command` | a connected client for one device |
+| `redfish_target`, `ipmi_target`, `bmc_target` | the inventory entry, one test run per device |
+| `ipmi_simulator`, `redfish_mockups` | whatever stands in for a device, started and stopped for you |
+| `_isolate_service_cfg`, `_collect_garbage`, `_reset_noderange_cache`, `_asyncio_debug` | autouse, no action needed |
 
-  Both are session-scoped and run on a session-scoped event loop, which the modules using them declare with
-  `pytest.mark.asyncio(loop_scope='session')`. This is not a preference. An IPMI session is a UDP conversation
-  whose sockets aiohmi registers against the loop that was running when it opened, in module state shared by the
-  whole process. Used from a second loop it does not raise, it stops answering, so every read costs a timeout.
-  A file that forgets the marker is refused at collection rather than left to hang, so the mistake names itself.
-  Copy an existing file and the question does not arise.
+Four things to know before writing against them:
 
-  The same constraint is why `_asyncio_debug` is a sync fixture that pulls in an async one rather than being async
-  itself. Requesting an async function-scoped fixture is what builds a function-scoped loop, and a session-loop
-  test must not have one at all.
-- **`ipmi_simulator`** starts `ipmi_sim` for any inventory entry carrying `simulator: true`, and stops it
-  afterwards. A simulator this run already started on the port is reused, which covers a second xdist worker
-  arriving for the same device; anything else holding it aborts the run, since a bind test cannot tell a simulator
-  from an unrelated process. It skips, rather than fails, when `ipmi_sim` is not installed.
-- **`redfish_mockups`** does the same for any entry carrying `mockup: <name>`, serving that capture with DMTF's
-  mockup server in a container on the port in the entry's address. A bare name is one of the bundles under
-  `tests/support/mockups`; anything with a separator is a path, so an inventory kept outside the repository can
-  point at a capture of a real machine. Whether the bundle is short form is read off the tree rather than
-  configured, and the certificate it presents is generated per run rather than committed. Each container is named
-  for the capture, a digest of where that capture came from, and the port, so one already serving it there is
-  reused, a stopped one of the same name is cleared out of the way, and anything else on the port aborts the run
-  rather than being read as the device the inventory named. The digest is what keeps two captures of one device in
-  different directories from sharing a name.
-- **`redfish_command`** returns a connected aiohmi Redfish client, one per device in the inventory. Credentials
-  come from that file and must never be committed. Do not run the hardware tier with `--showlocals`, which would
-  print the password into a failure report. Certificates are accepted unverified, so these tests confirm the BMC
-  answers, not that it is the BMC you meant.
-
-  One client is built per device per process, not per test. aiohmi has no Redfish logout, so each client leaves a
-  session behind until the BMC times it out, and building one per test exhausted a real XCC part way through a
-  run: later reads that open a secondary connection then failed with an AttributeError that looks like a confluent
-  bug and is not one. Reuse is safe because the client opens and closes an aiohttp session per request rather than
-  holding one, so it is not bound to the event loop it was created in.
+- **Do not call `core.load_plugins()` from a test.** It mutates `sys.path`, imports every plugin by bare module
+  name (pysnmp, asyncssh, aiohttp, EfiCompressor), registers the affluent plugin, and is not safe to call twice.
+  `pluginmap` builds the route tree directly instead.
+- **A module using `ipmi_command` or `bmc_command` must carry `pytest.mark.asyncio(loop_scope='session')`.**
+  Forgetting it is refused at collection, so the mistake names itself, but copying an existing IPMI file means the
+  question never comes up.
+- **Do not run the hardware tier with `--showlocals`.** It would print a BMC password into a failure report.
+- **Certificates are accepted unverified**, so these tests confirm the BMC answers, not that it is the BMC you
+  meant. Anything relying on identity needs a pinned fingerprint, the way confluent itself does it.
 
 Both the `configmanager` and `pluginmap` fixtures work by patching module globals, because that is how the code
 under test stores its state. Restoration is therefore a correctness property of the suite, not a nicety: a leak
@@ -472,16 +424,10 @@ The codebase is asyncio throughout and plugin dispatch is built on async generat
 - Asyncio debug mode is on for every test, which reports slow callbacks, exceptions never retrieved from a task,
   and the source location of a coroutine rather than just its name.
 
-  It is set on the event loop, not through `PYTHONASYNCIODEBUG`. That variable is process-wide and libraries read
-  it for their own purposes: aiohttp captures it at import as `aiohttp.helpers.DEBUG` and builds its HTTP response
-  parser with `lax=not DEBUG`, and strict parsing rejects a repeated singleton header. Real BMCs send them, so the
-  variable turns a response production accepts into `400, Duplicate 'Etag' header found`. Nothing consults
-  `loop.get_debug()` for parsing, so setting it on the loop gets the diagnostics without changing how any library
-  treats the wire.
-
-  **Do not export `PYTHONASYNCIODEBUG` yourself.** It reintroduces the strict parsing, and the hardware tier will
-  then fail against firmware that is fine in production. Note that `PYTHONASYNCIODEBUG=0` does not disable it
-  either: both asyncio and aiohttp test `bool()` of the string.
+  **Do not export `PYTHONASYNCIODEBUG` yourself**, and note that setting it to `0` does not turn it off. It makes
+  aiohttp parse the wire more strictly and the hardware tier then fails against firmware that is fine in
+  production. The mechanism, and why the flag goes on the loop instead, are in the `_asyncio_debug_function`
+  docstring in `conftest.py`.
 
 Existing `unittest.TestCase` and `IsolatedAsyncioTestCase` classes run under pytest unchanged. New tests should be
 plain functions with fixtures, but there is no need to rewrite a working test class just to move it here.
