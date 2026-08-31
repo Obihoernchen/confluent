@@ -281,24 +281,29 @@ def pytest_configure(config):
     conf._config = configparser.ConfigParser()
 
 
-def pytest_collection_modifyitems(config, items):
-    # Two keys, and the inventory is not one of them. Naming devices says what
-    # they are; --run-hardware says they may be touched. Exporting the
-    # inventory variable once, which is the natural thing to do, otherwise
-    # turns every later plain pytest in that shell into a run against real
-    # machines, and that is not something to find out afterwards.
-    hardware_ready = config.getoption('run_hardware')
-    lab_ready = config.getoption('run_lab')
-    skip_hardware = pytest.mark.skip(
-        reason='needs --run-hardware, and a device in the inventory named by '
-               + _INVENTORY_ENV)
-    skip_lab = pytest.mark.skip(reason='needs --run-lab')
+def _device_items(items):
+    """Each hardware test parametrized over a device, with that device.
 
-    # A hardware test that does not say what it may do is refused outright
-    # rather than given a default. The failure this guards against is a
-    # destructive test with a forgotten marker inheriting something permissive
-    # and running when it should not, which is not a thing to discover from
-    # the state of the machine afterwards.
+    The pairing three of the checks below work from, in one place so they
+    agree about what counts. A test with no device parameter has no inventory
+    entry to be judged against, and a non-hardware test never has one.
+    """
+    for item in items:
+        if 'hardware' not in item.keywords:
+            continue
+        device = _device_of(item)
+        if device is not None:
+            yield item, device, str(device.get('name', device['address']))
+
+
+def _refuse_undeclared_safety(items):
+    """Every hardware test says what it may do, or the run does not start.
+
+    Refused outright rather than given a default. The failure this guards
+    against is a destructive test with a forgotten marker inheriting something
+    permissive and running when it should not, which is not a thing to
+    discover from the state of the machine afterwards.
+    """
     undeclared = sorted({item.nodeid.split('[')[0] for item in items
                          if 'hardware' in item.keywords
                          and _safety_level(item) is None})
@@ -307,16 +312,15 @@ def pytest_collection_modifyitems(config, items):
             'hardware tests must carry exactly one of {0}:\n  {1}'.format(
                 ', '.join(_SAFETY_LEVELS), '\n  '.join(undeclared)))
 
-    # Refused here rather than left to be discovered, because the failure is
-    # silent: _service_nodes keys by name, so a second device with the same one
-    # replaces the first and stops being tested through the CLI, while the run
-    # still reports a full pass. Listing one machine under two methods is a
-    # reasonable thing to want; it just needs two names.
-    # A section name that is not a method is refused rather than ignored.
-    # redfih: instead of redfish: used to describe no devices at all, and a run
-    # that reaches no device is a run of skips, which reports green. The
-    # inventory is a file someone edits by hand, so a typo in it is the
-    # expected mistake rather than an unlikely one.
+
+def _refuse_unknown_sections():
+    """A section name that is not a method is a typo, not an empty section.
+
+    redfih: instead of redfish: used to describe no devices at all, and a run
+    that reaches no device is a run of skips, which reports green. The
+    inventory is a file someone edits by hand, so a typo in it is the expected
+    mistake rather than an unlikely one.
+    """
     unknown = sorted(set(_inventory()) - set(_KINDS) - {'defaults'})
     if unknown:
         raise pytest.UsageError(
@@ -324,6 +328,16 @@ def pytest_collection_modifyitems(config, items):
             'hardwaremanagement methods: {1}'.format(
                 ', '.join(repr(name) for name in unknown), ', '.join(_KINDS)))
 
+
+def _refuse_duplicate_names():
+    """One name, one device.
+
+    Refused here rather than left to be discovered, because the failure is
+    silent: _service_nodes keys by name, so a second device with the same one
+    replaces the first and stops being tested through the CLI, while the run
+    still reports a full pass. Listing one machine under two methods is a
+    reasonable thing to want; it just needs two names.
+    """
     duplicates = _duplicate_target_names()
     if duplicates:
         raise pytest.UsageError(
@@ -332,50 +346,76 @@ def pytest_collection_modifyitems(config, items):
                 '{0}, listed under {1}'.format(name, ' and '.join(kinds))
                 for name, kinds in sorted(duplicates.items()))))
 
-    # A test that asks for one of these and does not run on the session loop
-    # does not fail, it stops being answered, and every read in it costs the
-    # per-test timeout instead. That is the worst shape a failure can take
-    # here: nothing says what is wrong, and a new file gets it by forgetting
-    # one line. Refused for the same reason a hardware test with no safety
-    # marker is, and the fixture docstrings carry the why.
-    wrong_loop = sorted({
+
+def _refuse_the_wrong_loop(items, config):
+    """A client bound to the session loop may only be used from it.
+
+    A test that asks for one and does not run there does not fail, it stops
+    being answered, and every read in it costs the per-test timeout instead.
+    That is the worst shape a failure can take here: nothing says what is
+    wrong, and a new file gets it by leaving out one line. Refused for the
+    same reason a hardware test with no safety marker is, and the fixture
+    docstrings carry the why.
+    """
+    wrong = sorted({
         item.nodeid.split('[')[0] for item in items
         if set(getattr(item, 'fixturenames', ())) & set(_SESSION_LOOP_FIXTURES)
         and _test_loop_scope(item, config) != 'session'})
-    if wrong_loop:
+    if wrong:
         raise pytest.UsageError(
             'a test using {0} must run on the session loop, which its module '
             'declares with pytest.mark.asyncio(loop_scope=\'session\'). '
             'Without it these hang rather than fail:\n  {1}'.format(
-                ' or '.join(_SESSION_LOOP_FIXTURES), '\n  '.join(wrong_loop)))
+                ' or '.join(_SESSION_LOOP_FIXTURES), '\n  '.join(wrong)))
 
-    run_ceiling = config.getoption('hw_level')
-    # Which known_failures entry turned out to describe a test that exists.
-    # See the check after the loop.
-    matched = set()
-    devices = {}
+
+def _gate_by_tier(items, config):
+    """Skip what this run has not been given the key for.
+
+    Two keys, and the inventory is not one of them. Naming devices says what
+    they are; --run-hardware says they may be touched. Exporting the inventory
+    variable once, which is the natural thing to do, otherwise turns every
+    later plain pytest in that shell into a run against real machines, and
+    that is not something to find out afterwards.
+    """
+    skip_hardware = pytest.mark.skip(
+        reason='needs --run-hardware, and a device in the inventory named by '
+               + _INVENTORY_ENV)
+    skip_lab = pytest.mark.skip(reason='needs --run-lab')
+    hardware_ready = config.getoption('run_hardware')
+    lab_ready = config.getoption('run_lab')
     for item in items:
         if 'hardware' in item.keywords and not hardware_ready:
             item.add_marker(skip_hardware)
         if 'lab' in item.keywords and not lab_ready:
             item.add_marker(skip_lab)
+
+
+def _mark_known_failures(items):
+    """xfail whatever a device is known not to satisfy, and say what stuck.
+
+    Returns the (device, pattern) pairs that described a test that exists, for
+    _refuse_stale_known_failures to judge the inventory by.
+    """
+    matched = set()
+    for item, device, name in _device_items(items):
+        for pattern, reason in (device.get('known_failures') or {}).items():
+            if pattern in item.nodeid:
+                matched.add((name, pattern))
+                item.add_marker(pytest.mark.xfail(reason=reason, strict=False))
+    return matched
+
+
+def _apply_safety_ceilings(items, config):
+    """The device ceiling and the run ceiling both apply, and the lower wins.
+
+    "In use right now" is a property of the machine, not of the run, so a
+    device must stay protected even when the command line asks for more.
+    """
+    run_ceiling = config.getoption('hw_level')
+    for item in items:
         if 'hardware' not in item.keywords:
             continue
-
-        device = _device_of(item)
-        if device is not None:
-            name = str(device.get('name', device['address']))
-            devices[name] = device
-            for pattern, reason in _device_known_failures(item).items():
-                if pattern in item.nodeid:
-                    matched.add((name, pattern))
-                    item.add_marker(pytest.mark.xfail(reason=reason,
-                                                      strict=False))
-
-        # The device ceiling and the run ceiling both apply, and the lower
-        # wins. "In use right now" is a property of the machine, not of the
-        # run, so a device must stay protected even when the command line asks
-        # for more.
         level = _safety_level(item)
         device_ceiling = _device_ceiling(item)
         if _level_index(level) > _level_index(run_ceiling):
@@ -388,27 +428,55 @@ def pytest_collection_modifyitems(config, items):
                 reason='{0} test, device allows up to {1}: raise allow: in '
                        'the inventory'.format(level, device_ceiling)))
 
-    # An entry naming a test that no longer exists is worse than no entry: it
-    # reads as a defect still being watched, while nothing is watching it, and
-    # the next person to tidy the inventory removes it as spent. Renaming a
-    # test is all it takes, since these match on a substring of the nodeid.
-    # Same argument as --require-target, one level down: a record that quietly
-    # stopped covering anything still reports green.
-    #
-    # Only devices that collected something are judged, so deselecting the
-    # tier does not condemn every entry, and -k is left alone because
-    # narrowing the run by hand is not evidence about the inventory.
-    if not config.getoption('keyword'):
-        stale = sorted(
-            '{0}, listed under {1}'.format(pattern, name)
-            for name, device in devices.items()
-            for pattern in (device.get('known_failures') or {})
-            if (name, pattern) not in matched)
-        if stale:
-            raise pytest.UsageError(
-                'every known_failures entry has to name a test that exists, '
-                'and these matched nothing collected:\n  {0}'.format(
-                    '\n  '.join(stale)))
+
+def _refuse_stale_known_failures(items, matched, config):
+    """Every known_failures entry has to describe a test that exists.
+
+    An entry naming one that does not is worse than no entry: it reads as a
+    defect still being watched, while nothing is watching it, and the next
+    person to tidy the inventory removes it as spent. Renaming a test is all
+    it takes, since these match on a substring of the nodeid. Same argument as
+    --require-target, one level down: a record that quietly stopped covering
+    anything still reports green.
+
+    Only devices that collected something are judged, so deselecting the tier
+    does not condemn every entry, and -k is left alone because narrowing the
+    run by hand is not evidence about the inventory.
+    """
+    if config.getoption('keyword'):
+        return
+    devices = {name: device for _, device, name in _device_items(items)}
+    stale = sorted(
+        '{0}, listed under {1}'.format(pattern, name)
+        for name, device in devices.items()
+        for pattern in (device.get('known_failures') or {})
+        if (name, pattern) not in matched)
+    if stale:
+        raise pytest.UsageError(
+            'every known_failures entry has to name a test that exists, and '
+            'these matched nothing collected:\n  {0}'.format(
+                '\n  '.join(stale)))
+
+
+def pytest_collection_modifyitems(config, items):
+    """Refuse what cannot be run, then mark what can.
+
+    The refusals come first so that a mistake in the inventory or in a test
+    stops the run rather than being half applied. The stale known_failures
+    audit is the exception and has to come last: it judges the inventory by
+    what the marking pass found, so there is nothing to say until that has
+    run.
+    """
+    _refuse_undeclared_safety(items)
+    _refuse_unknown_sections()
+    _refuse_duplicate_names()
+    _refuse_the_wrong_loop(items, config)
+
+    _gate_by_tier(items, config)
+    matched = _mark_known_failures(items)
+    _apply_safety_ceilings(items, config)
+
+    _refuse_stale_known_failures(items, matched, config)
 
 
 @pytest.fixture(autouse=True)
