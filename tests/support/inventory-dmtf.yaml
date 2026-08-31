@@ -8,9 +8,10 @@
 #
 # Nothing has to be started by hand: the redfish_mockups fixture serves each
 # mockup: named below on the port in its address, and stops it afterwards. It
-# needs podman or docker, and skips where there is neither. A service already
-# answering on the port is used as it stands, so serving one by hand per
-# tests/support/mockups/README.md still works and is not disturbed.
+# needs podman or docker, and skips where there is neither. A container of its
+# own already serving that capture there is reused; anything else answering on
+# the port aborts the run, since the reads would otherwise be reported against
+# a device that was never served.
 #
 # The mockups describe fictional hardware, so every entry takes the generic
 # code path. Vendor handlers need a capture of a real machine, which is not

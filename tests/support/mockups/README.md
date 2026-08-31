@@ -33,8 +33,9 @@ been removed. Confluent never requests them, they are identical across vendors, 
 ## Serving one
 
 Normally nothing needs to be: an inventory entry carrying `mockup: <name>` has the `redfish_mockups` fixture serve
-it for the run. What follows is for looking at one by hand, and a service already answering on the port is left
-alone by the fixture, so a server started this way is used rather than replaced.
+it for the run. What follows is for looking at one by hand, so use a port no inventory names: the fixture reuses
+only a container of its own, named for the capture as well as the port, and aborts the run on anything else
+answering there rather than reading it as the device the inventory named.
 
 These use the short form layout, without the `/redfish/v1` prefix, so the server needs `-S`. A capture taken with
 `tests/support/capture-mockups.py` does not.

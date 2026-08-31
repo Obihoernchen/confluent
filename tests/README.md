@@ -321,9 +321,12 @@ The IPMI one needs `ipmi_sim`, from OpenIPMI's lanserv tools (`OpenIPMI-lanserv`
 one needs podman or docker, and pulls DMTF's mockup server image on first use. Where neither is present the tests
 skip rather than fail, so an inventory naming a stand-in stays usable on a machine that cannot run it.
 
-Something already listening on the port is used as it stands and left running, so serving a mockup by hand per
-`tests/support/mockups/README.md` still works, and a second xdist worker arriving for the same device does not
-start a duplicate.
+Neither fixture will run against something it cannot identify. Anything else answering on the port aborts the run,
+naming it: whatever it is would be what the tests then read, and the results would be reported against the device
+the inventory names. What counts as identified differs, because a process on a UDP port says nothing about itself
+while a container carries a name. `ipmi_simulator` therefore reuses only a simulator this run started, and a
+leftover from an earlier run aborts; `redfish_mockups` reuses any container named for this capture on this port,
+including one an earlier run left behind, and clears it first if it has since stopped.
 
 Neither is a substitute for the other, and the difference is worth keeping in mind when reading a green run:
 
@@ -422,14 +425,18 @@ All in `conftest.py`.
   itself. Requesting an async function-scoped fixture is what builds a function-scoped loop, and a session-loop
   test must not have one at all.
 - **`ipmi_simulator`** starts `ipmi_sim` for any inventory entry carrying `simulator: true`, and stops it
-  afterwards. A simulator already listening on the port is used as it stands and left running, which covers one
-  started by hand and a second xdist worker arriving for the same device. It skips, rather than fails, when
-  `ipmi_sim` is not installed.
+  afterwards. A simulator this run already started on the port is reused, which covers a second xdist worker
+  arriving for the same device; anything else holding it aborts the run, since a bind test cannot tell a simulator
+  from an unrelated process. It skips, rather than fails, when `ipmi_sim` is not installed.
 - **`redfish_mockups`** does the same for any entry carrying `mockup: <name>`, serving that capture with DMTF's
   mockup server in a container on the port in the entry's address. A bare name is one of the bundles under
   `tests/support/mockups`; anything with a separator is a path, so an inventory kept outside the repository can
   point at a capture of a real machine. Whether the bundle is short form is read off the tree rather than
-  configured, and the certificate it presents is generated per run rather than committed.
+  configured, and the certificate it presents is generated per run rather than committed. Each container is named
+  for the capture, a digest of where that capture came from, and the port, so one already serving it there is
+  reused, a stopped one of the same name is cleared out of the way, and anything else on the port aborts the run
+  rather than being read as the device the inventory named. The digest is what keeps two captures of one device in
+  different directories from sharing a name.
 - **`redfish_command`** returns a connected aiohmi Redfish client, one per device in the inventory. Credentials
   come from that file and must never be committed. Do not run the hardware tier with `--showlocals`, which would
   print the password into a failure report. Certificates are accepted unverified, so these tests confirm the BMC

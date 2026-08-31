@@ -10,6 +10,7 @@ import configparser
 import contextlib
 import functools
 import gc
+import hashlib
 import importlib.util
 import json
 import os
@@ -525,8 +526,14 @@ def _targets(kind):
                 "inventory device {0!r} has allow: {1!r}, expected one of "
                 "{2}".format(merged.get('name', merged.get('address')), allow,
                              ', '.join(_SAFETY_LEVELS)))
-        missing = [field for field in ('address', 'user')
-                   if not merged.get(field)]
+        required = ['address', 'user']
+        if merged.get('simulator'):
+            # The simulator's own account is written from these, so an entry
+            # without a password gives it the literal string 'None' to expect
+            # while the client offers None, and every session then fails
+            # authentication in a way that reads as an aiohmi defect.
+            required.append('password')
+        missing = [field for field in required if not merged.get(field)]
         if missing:
             # Refused rather than skipped. An entry with a typo used to be
             # dropped in silence, so the run reported a full pass over the
@@ -607,16 +614,36 @@ def _split_port(address, default=443):
     somewhere other than 443, so the address variables accept host:port.
     Bracketed IPv6 is honoured, and a bare IPv6 literal is left alone rather
     than having its last group mistaken for a port.
+
+    Deliberately the same reading as the ipmi plugin's get_conn_params, down
+    to the netmask suffix coming off and a port outside the usable range
+    falling back to the default. The fixtures and the service they drive
+    resolve one inventory entry, so an address that means two different
+    endpoints depending on which tier reads it is the kind of disagreement
+    that surfaces as one tier timing out while the other passes.
+
+    The redfish plugin is the one place not to copy: it keeps the brackets on
+    an IPv6 literal, because its address goes into a URL, and this one must
+    not, because the host here reaches socket.bind and a container argument.
+    test_conn_params.py keeps that divergence deliberate; do not tidy it away.
     """
+    address = address.split('/', 1)[0].strip()
     if address.startswith('['):
         host, _, rest = address.partition(']')
-        if rest.startswith(':'):
-            return host[1:], int(rest[1:])
-        return host[1:], default
-    host, sep, port = address.rpartition(':')
-    if sep and port.isdigit() and ':' not in host:
-        return host, int(port)
-    return address, default
+        host = host[1:]
+        port = int(rest[1:]) if rest[1:].isdigit() else default
+    elif address.count(':') == 1:
+        # One colon is a port, however unusable; more than one is a bare IPv6
+        # literal, whose last group must not be mistaken for one. Same
+        # discriminator the plugins use, so an unparseable port falls back
+        # here too rather than being carried into the host.
+        host, _, named = address.rpartition(':')
+        port = int(named) if named.isdigit() else default
+    else:
+        host, port = address, default
+    if not 0 < port <= 65535:
+        port = default
+    return host, port
 
 
 def _support(name):
@@ -802,8 +829,39 @@ def _mockup_certificate(directory):
     return directory
 
 
+def _mockup_container(capture, port):
+    """The name this fixture serves a given capture on a given port under.
+
+    Carries what is served as well as where, so it identifies the service
+    rather than merely the port, which is what lets a container found already
+    running be told apart from something else that happens to answer there.
+
+    The basename is not that identity on its own. An inventory may point
+    mockup: at any path, and two captures of one device in different
+    directories share it, so a container left behind for one would be reused
+    for the other and the reads reported against a capture that was never
+    served. A digest of the resolved path is what separates them; the basename
+    stays in the name so that podman ps is still readable.
+    """
+    digest = hashlib.sha256(str(capture.resolve()).encode()).hexdigest()[:8]
+    return 'confluent-test-mockup-{0}-{1}-{2}'.format(
+        re.sub(r'[^A-Za-z0-9_.-]', '-', capture.name), digest, port)
+
+
+def _mockup_serving(runtime, container):
+    """Whether this fixture's own container for a capture is already up."""
+    inspected = subprocess.run(
+        [runtime, 'container', 'inspect', '-f', '{{.State.Running}}',
+         container],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    return inspected.returncode == 0 and inspected.stdout.strip() == 'true'
+
+
 def _start_mockup(runtime, container, capture, host, port, certificates):
     """Serve one capture under a name of this fixture's own."""
+    # Bracketed where it is a literal, since a published port is host:port:port
+    # and an unbracketed IPv6 address gives the runtime nothing it can parse.
+    published = '[{0}]'.format(host) if ':' in host else host
     arguments = ['-D', '/mockup', '-s', '-p', '8000',
                  # The server binds its own loopback by default, which a
                  # published port cannot reach from outside the container.
@@ -818,17 +876,18 @@ def _start_mockup(runtime, container, capture, host, port, certificates):
 
     started = subprocess.run(
         [runtime, 'run', '-d', '--name', container,
-         '-p', '{0}:{1}:8000'.format(host, port),
+         '-p', '{0}:{1}:8000'.format(published, port),
          '--security-opt', 'label=disable',
          '-v', '{0}:/mockup:ro'.format(capture),
          '-v', '{0}:/certs:ro'.format(certificates),
          _MOCKUP_IMAGE] + arguments,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if started.returncode:
-        # Not preceded by a force removal any more. The name used to be keyed
-        # on the port alone, so clearing it first could destroy a container
-        # someone else had started, including one still coming up on a port an
-        # inventory happened to share.
+        # The caller clears a stopped container of this name first, and only
+        # this name: it carries the capture and a digest of where that capture
+        # came from, so it cannot be one someone else started. The port-keyed
+        # name this replaced could not make that claim, which is why removal
+        # was dropped then and is safe now.
         pytest.fail('could not serve the {0} mockup:\n{1}'.format(
             capture.name, started.stdout.strip()))
 
@@ -852,9 +911,17 @@ def redfish_mockups(tmp_path_factory):
 
     The Redfish counterpart of ipmi_simulator, and the same contract: yields a
     callable taking a target, entries without a ``mockup:`` pass through
-    untouched, and a service already answering on the port is used as it stands
-    rather than replaced. That covers one started by hand and a second xdist
-    worker arriving for the same device.
+    untouched, and a container already serving this capture on this port is
+    used as it stands rather than replaced. That covers a second xdist worker
+    arriving for the same device, and a container left behind by a run that
+    did not get to tear down.
+
+    Anything else answering on the port is an error rather than something to
+    run against, exactly as it is for the simulator. A capture is served under
+    a name saying which one it is, so the check is on identity rather than on
+    whether the port answers: two captures share a port the moment an
+    inventory is edited, and the reads would then be attributed to a device
+    that was never served.
 
     Skips rather than fails where the machine cannot serve one at all, so an
     inventory naming a capture is still usable without a container runtime.
@@ -877,19 +944,34 @@ def redfish_mockups(tmp_path_factory):
                 capture_name, capture))
 
         host, port = _split_port(target['address'])
-        if _mockup_answers(host, port):
+        # Named after what it serves as well as where, so two inventories
+        # reusing a port do not silently replace each other's service, and so
+        # the name cannot collide with one a person started by hand.
+        container = _mockup_container(capture, port)
+        if _mockup_serving(runtime, container):
+            _wait_for_mockup(runtime, container, host, port)
             return
+        # Not running, so anything left under this name is a corpse of this
+        # fixture's own from a run that died, and it would hold the name
+        # against the start below: podman refuses the name outright and the
+        # tier reports "could not serve" with a storage error under it. Safe
+        # to drop precisely because the name says which capture it served,
+        # which the port-keyed name it replaced did not.
+        subprocess.run([runtime, 'rm', '-f', container],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if _mockup_answers(host, port):
+            pytest.fail(
+                'something already answers Redfish on {0}:{1}, and it is not '
+                'the {2} capture. Whatever it is would be what these tests '
+                'then read, and the results would be reported against {2}, so '
+                'stop it or give the device another port in the '
+                'inventory.'.format(host, port, capture.name))
 
         _mockup_image(runtime)
         if certificates is None:
             certificates = _mockup_certificate(
                 tmp_path_factory.mktemp('mockupcerts'))
 
-        # Named after what it serves as well as where, so two inventories
-        # reusing a port do not silently replace each other's service, and so
-        # the name cannot collide with one a person started by hand.
-        container = 'confluent-test-mockup-{0}-{1}'.format(
-            re.sub(r'[^A-Za-z0-9_.-]', '-', capture.name), port)
         _start_mockup(runtime, container, capture, host, port, certificates)
         started.append((runtime, container))
         _wait_for_mockup(runtime, container, host, port)
