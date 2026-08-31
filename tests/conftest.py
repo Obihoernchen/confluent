@@ -146,6 +146,12 @@ _MOCKUP_DIRECTORY = pathlib.Path(__file__).parent / 'support' / 'mockups'
 _MOCKUP_READY_TIMEOUT = 30
 
 
+# Fixtures holding a client that only answers on the loop that opened it, so a
+# test using one has to run on that loop. See ipmi_command, and the collection
+# check that refuses a test which does not.
+_SESSION_LOOP_FIXTURES = ('ipmi_command', 'bmc_command')
+
+
 def pytest_addoption(parser):
     parser.addoption(
         '--run-hardware', action='store_true', default=False,
@@ -322,7 +328,28 @@ def pytest_collection_modifyitems(config, items):
                 '{0}, listed under {1}'.format(name, ' and '.join(kinds))
                 for name, kinds in sorted(duplicates.items()))))
 
+    # A test that asks for one of these and does not run on the session loop
+    # does not fail, it stops being answered, and every read in it costs the
+    # per-test timeout instead. That is the worst shape a failure can take
+    # here: nothing says what is wrong, and a new file gets it by forgetting
+    # one line. Refused for the same reason a hardware test with no safety
+    # marker is, and the fixture docstrings carry the why.
+    wrong_loop = sorted({
+        item.nodeid.split('[')[0] for item in items
+        if set(getattr(item, 'fixturenames', ())) & set(_SESSION_LOOP_FIXTURES)
+        and _test_loop_scope(item, config) != 'session'})
+    if wrong_loop:
+        raise pytest.UsageError(
+            'a test using {0} must run on the session loop, which its module '
+            'declares with pytest.mark.asyncio(loop_scope=\'session\'). '
+            'Without it these hang rather than fail:\n  {1}'.format(
+                ' or '.join(_SESSION_LOOP_FIXTURES), '\n  '.join(wrong_loop)))
+
     run_ceiling = config.getoption('hw_level')
+    # Which known_failures entry turned out to describe a test that exists.
+    # See the check after the loop.
+    matched = set()
+    devices = {}
     for item in items:
         if 'hardware' in item.keywords and not hardware_ready:
             item.add_marker(skip_hardware)
@@ -331,10 +358,15 @@ def pytest_collection_modifyitems(config, items):
         if 'hardware' not in item.keywords:
             continue
 
-        for pattern, reason in _device_known_failures(item).items():
-            if pattern in item.nodeid:
-                item.add_marker(pytest.mark.xfail(reason=reason,
-                                                  strict=False))
+        device = _device_of(item)
+        if device is not None:
+            name = str(device.get('name', device['address']))
+            devices[name] = device
+            for pattern, reason in _device_known_failures(item).items():
+                if pattern in item.nodeid:
+                    matched.add((name, pattern))
+                    item.add_marker(pytest.mark.xfail(reason=reason,
+                                                      strict=False))
 
         # The device ceiling and the run ceiling both apply, and the lower
         # wins. "In use right now" is a property of the machine, not of the
@@ -352,6 +384,28 @@ def pytest_collection_modifyitems(config, items):
                 reason='{0} test, device allows up to {1}: raise allow: in '
                        'the inventory'.format(level, device_ceiling)))
 
+    # An entry naming a test that no longer exists is worse than no entry: it
+    # reads as a defect still being watched, while nothing is watching it, and
+    # the next person to tidy the inventory removes it as spent. Renaming a
+    # test is all it takes, since these match on a substring of the nodeid.
+    # Same argument as --require-target, one level down: a record that quietly
+    # stopped covering anything still reports green.
+    #
+    # Only devices that collected something are judged, so deselecting the
+    # tier does not condemn every entry, and -k is left alone because
+    # narrowing the run by hand is not evidence about the inventory.
+    if not config.getoption('keyword'):
+        stale = sorted(
+            '{0}, listed under {1}'.format(pattern, name)
+            for name, device in devices.items()
+            for pattern in (device.get('known_failures') or {})
+            if (name, pattern) not in matched)
+        if stale:
+            raise pytest.UsageError(
+                'every known_failures entry has to name a test that exists, '
+                'and these matched nothing collected:\n  {0}'.format(
+                    '\n  '.join(stale)))
+
 
 @pytest.fixture(autouse=True)
 def _asyncio_debug(request):
@@ -368,13 +422,13 @@ def _asyncio_debug(request):
     tier hanging exactly as before, which is what identified the loop itself,
     rather than anything the fixture did, as the problem.
     """
-    if _test_loop_scope(request) == 'session':
+    if _test_loop_scope(request.node, request.config) == 'session':
         # _asyncio_debug_session has already done it for that loop.
         return
     request.getfixturevalue('_asyncio_debug_function')
 
 
-def _test_loop_scope(request):
+def _test_loop_scope(node, config):
     """Which loop this test will run on, however that was asked for.
 
     The marker wins where a module sets one, and the ini default decides the
@@ -383,10 +437,10 @@ def _test_loop_scope(request):
     rather than on the fact, so setting asyncio_default_test_loop_scope would
     have quietly reintroduced the second loop and the timeouts with it.
     """
-    marker = request.node.get_closest_marker('asyncio')
+    marker = node.get_closest_marker('asyncio')
     if marker and 'loop_scope' in marker.kwargs:
         return marker.kwargs['loop_scope']
-    return request.config.getini('asyncio_default_test_loop_scope') or 'function'
+    return config.getini('asyncio_default_test_loop_scope') or 'function'
 
 
 @pytest.fixture

@@ -368,6 +368,9 @@ satisfy. Those tests still run and report as xfail rather than being skipped or 
 passing shows up as an unexpected pass and the entry can go. Keep two kinds of entry apart: a gap in the replay is
 one thing, and a confluent defect the replay exposed is another that should be fixed rather than accumulated.
 
+An entry whose key matches nothing collected is refused at collection. These match on a substring of the nodeid,
+so renaming a test is enough to leave a record that reads as a watched defect while nothing watches it.
+
 ### Running in parallel
 
 Not yet, deliberately. `pytest-xdist` is not a dependency and no `--dist` option is set, because an option in
@@ -418,8 +421,8 @@ All in `conftest.py`.
   `pytest.mark.asyncio(loop_scope='session')`. This is not a preference. An IPMI session is a UDP conversation
   whose sockets aiohmi registers against the loop that was running when it opened, in module state shared by the
   whole process. Used from a second loop it does not raise, it stops answering, so every read costs a timeout.
-  A new IPMI test file without that marker will hang rather than fail, which is a bad afternoon: copy an existing
-  one.
+  A file that forgets the marker is refused at collection rather than left to hang, so the mistake names itself.
+  Copy an existing file and the question does not arise.
 
   The same constraint is why `_asyncio_debug` is a sync fixture that pulls in an async one rather than being async
   itself. Requesting an async function-scoped fixture is what builds a function-scoped loop, and a session-loop
