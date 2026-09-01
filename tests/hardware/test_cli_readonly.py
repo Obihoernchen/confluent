@@ -38,35 +38,56 @@ def test_service_lists_the_configured_nodes(run_cli, service_node):
     assert service_node in output.splitlines()
 
 
-@pytest.mark.parametrize('tool,pattern', [
-    ('nodepower', r'^\S+: (on|off)$'),
-    ('nodehealth', r'^\S+: \w+'),
-    ('nodeidentify', r'^\S+: (on|off|blink)$'),
+# The third field is whether a non-zero exit can still carry an answer.
+# nodehealth is the one that can: it reports what it read through the exit
+# code as well as the output, so "not ok" is a successful read of a bad state.
+# Everywhere else a non-zero exit means the read did not happen, and treating
+# the two alike would let a real refusal pass for an answer.
+@pytest.mark.parametrize('tool,pattern,exit_carries_the_answer', [
+    ('nodepower', r'^\S+: (on|off)$', False),
+    ('nodehealth', r'^\S+: \w+', True),
+    ('nodeidentify', r'^\S+: (on|off|blink)$', False),
     # Reading the boot override, not setting one. Passing no device is a read:
     # simple_noderange_command sends an update only when it has an input, and
     # with none it fetches /boot/nextdevice instead. Confirmed against a device
     # as well as in the source, by reading the override either side of the call
     # and checking it did not move. Never give this entry an argument.
-    ('nodesetboot', r'^\S+: (default|cd|network|http|setup|hd|usb|floppy)\b'),
+    ('nodesetboot', r'^\S+: (default|cd|network|http|setup|hd|usb|floppy)\b',
+     False),
 ])
 def test_state_commands_report_a_usable_value(run_cli, service_node, tool,
-                                              pattern):
+                                              pattern,
+                                              exit_carries_the_answer):
     """The answer has to be one a caller can act on, not merely non-empty.
 
     A device is allowed not to offer a given state, as long as it says so.
     Not every BMC has an identify light. What is not allowed is failing
     without an explanation, which is the same contract the protocol-level
     sweep applies one layer down.
+
+    An answer is not the same as a zero exit, which is why the table carries
+    the third field. nodehealth exits non-zero for a node that is unhealthy,
+    so reading a machine in warning state used to skip here as though the
+    command had been refused, and the shape of what it printed went unchecked
+    against every device that was not perfectly well.
     """
     returncode, output = run_cli(tool, service_node)
+    lines = _node_lines(output, service_node)
+    answered = bool(lines) and bool(re.match(pattern, lines[0]))
 
-    if returncode != 0:
+    # Checked on every path, not only the failing one. These patterns are
+    # deliberately loose, and "n1: Unexpected Error: 'PCIeDevices'" satisfies
+    # r'^\S+: \w+' perfectly, so leaving this inside the refusal branch let an
+    # unexplained error count as an answer the moment a non-zero exit was
+    # allowed to carry one. A tool exiting zero while printing one would be
+    # worth catching here too.
+    assert 'Unexpected' not in output, \
+        '{0} reported an unexplained error: {1}'.format(tool, output)
+
+    if returncode != 0 and not (exit_carries_the_answer and answered):
         assert output.strip(), '{0} failed and said nothing'.format(tool)
-        assert 'Unexpected' not in output, \
-            '{0} failed with an unexplained error: {1}'.format(tool, output)
         pytest.skip('device refused {0}: {1}'.format(tool, output))
 
-    lines = _node_lines(output, service_node)
     assert lines, 'no line reported for {0}:\n{1}'.format(service_node, output)
     assert re.match(pattern, lines[0]), lines[0]
 
