@@ -22,10 +22,22 @@ seed tests, not a coverage push. Record a baseline with the command above and wo
 picking a target percentage.
 
 Install the tooling with `pip install -r requirements-test.txt`. A full run additionally needs confluent's own
-runtime dependencies importable: `pyparsing`, `cryptography`, `aiohttp`, `msgpack`, `pyyaml`, `lxml`, `pysnmp`,
-`asyncssh`, `libarchive-c`, `python-dateutil`, `webauthn`, plus `legacycrypt` on Python 3.13 and newer (`import
-crypt` is unconditional in `configmanager.py` and `selfservice.py`, and `crypt` left the stdlib in 3.13). The
-guarded imports (`psutil`, `netifaces`, `EfiCompressor`, `libvirt`, `confluent.pam`) are optional.
+runtime dependencies importable. Measured into an empty virtualenv rather than copied from the packaging, this is
+the set that gets collection to succeed:
+
+```sh
+pip install aiohttp asyncssh cryptography libarchive-c lxml msgpack psutil pyparsing pysnmp python-dateutil pyyaml
+```
+
+`webauthn` is not among them, and `psutil` is not optional the way the others are: `confluent/util.py` falls
+back to `netifaces` when it is missing, so you need one of the two. `EfiCompressor`, `libvirt` and
+`confluent.pam` are genuinely optional.
+
+On Python 3.13 and newer you additionally need a module *named* `crypt`, because `configmanager.py` and
+`selfservice.py` import it and it left the stdlib in 3.13. Installing PyPI `legacycrypt` does not satisfy that:
+it installs as `legacycrypt.py`. Either use a distro that ships a `crypt.py` shim, Fedora's `python3-legacycrypt`
+being one, or run the suite on 3.12, which is what a CI job should do. The guarded import that removes this
+constraint is on `fix/crypt-without-stdlib` and is not merged.
 
 There is no tox or nox yet. `pytest.ini` sets `pythonpath = confluent_server confluent_client`, so pytest runs
 against the working tree with no install step.
@@ -455,7 +467,8 @@ actually catch a 3.10-only construct entering production code. Executing the sui
 stronger still, and is worth considering whenever a CI test job is added.
 
 Relevant hazards: `asyncio.to_thread` needs 3.9+, module-level `asyncio.Lock()` in `configmanager.py` is
-warning-free only on 3.10+, and `crypt` left the stdlib in 3.13.
+warning-free only on 3.10+, and `crypt` left the stdlib in 3.13, on which see the dependency note under
+"Running".
 
 A Python 3.9 test environment would need `pytest<9` and `pytest-asyncio<1.3`. That is the only reason those bounds
 exist, and why `requirements-test.txt` does not apply them to the default setup.
