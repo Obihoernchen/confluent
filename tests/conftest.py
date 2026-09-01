@@ -142,7 +142,8 @@ _SIMULATOR_READY = 'Opened UDP port'
 # port in its address is where that capture is served. Unlike ipmi_sim this is
 # a container, because the server is published as one and nothing about it is
 # worth installing on a developer's machine.
-_MOCKUP_IMAGE = 'docker.io/dmtf/redfish-mockup-server:latest'
+_MOCKUP_IMAGE = ('docker.io/dmtf/redfish-mockup-server@sha256:'
+                 '6dbfa26272dc506b74a45d7356e31dc65396f7a8faf2b6ef860ee4b428e38d1b')
 _MOCKUP_DIRECTORY = pathlib.Path(__file__).parent / 'support' / 'mockups'
 
 # How long to wait for a replayed service to answer its root. Generous next to

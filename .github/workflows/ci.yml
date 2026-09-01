@@ -125,3 +125,55 @@ jobs:
             fi
           done
           exit "$rc"
+
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 still has crypt in the standard library and 3.13 does not, so
+        # the two legs take the two sides of the guarded import in
+        # configmanager.py and selfservice.py. Nothing else differs.
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install what the suite imports
+        # Measured into an empty virtualenv rather than copied from the
+        # packaging, which lists more than is needed and less than is required.
+        # tests/README.md carries the same list and the reasoning.
+        run: |
+          pip install -r requirements-test.txt
+          pip install aiohttp asyncssh cryptography libarchive-c lxml msgpack \
+                      psutil pyparsing pysnmp python-dateutil pyyaml
+          python -c 'import crypt' 2>/dev/null \
+            || pip install legacycrypt
+      - name: Unit and integration
+        run: python -m pytest -q
+      - name: Redfish, against replayed DMTF mockups
+        # Pulled here rather than by the fixture, because the first pull is
+        # 175MB and can outlast the per-test timeout in addopts. The digest
+        # lives in conftest.py so the two cannot drift apart.
+        run: |
+          image=$(python - <<'PY'
+          import re
+          src = open('tests/conftest.py').read()
+          block = re.search(r"_MOCKUP_IMAGE = \(?((?:\s*'[^']*')+)", src).group(1)
+          print(''.join(re.findall(r"'([^']*)'", block)))
+          PY
+          )
+          docker pull "$image"
+          CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml \
+            python -m pytest -q -m hardware --run-hardware --require-target=redfish
+      - name: IPMI, against ipmi_sim
+        # --require-target so a runner without the simulator fails rather than
+        # skipping its way to a green run that tested nothing.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openipmi
+          CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml \
+            python -m pytest -q -m hardware --run-hardware --require-target=ipmi

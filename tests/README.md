@@ -33,11 +33,9 @@ pip install aiohttp asyncssh cryptography libarchive-c lxml msgpack psutil pypar
 back to `netifaces` when it is missing, so you need one of the two. `EfiCompressor`, `libvirt` and
 `confluent.pam` are genuinely optional.
 
-On Python 3.13 and newer you additionally need a module *named* `crypt`, because `configmanager.py` and
-`selfservice.py` import it and it left the stdlib in 3.13. Installing PyPI `legacycrypt` does not satisfy that:
-it installs as `legacycrypt.py`. Either use a distro that ships a `crypt.py` shim, Fedora's `python3-legacycrypt`
-being one, or run the suite on 3.12, which is what a CI job should do. The guarded import that removes this
-constraint is on `fix/crypt-without-stdlib` and is not merged.
+On Python 3.13 and newer add `legacycrypt`, because `crypt` left the stdlib in that release.
+`configmanager.py` and `selfservice.py` fall back to it, and to `crypt_r` after that, so either module under
+either name will do; a distro that ships a `crypt.py` shim needs neither.
 
 There is no tox or nox yet. `pytest.ini` sets `pythonpath = confluent_server confluent_client`, so pytest runs
 against the working tree with no install step.
@@ -386,6 +384,20 @@ deployment would blow straight through.
 
 `--strict-markers` is on, so a typo in a marker name is an error rather than a silently skipped selection.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` carries a `Pytest` job running the three tiers that need no hardware: unit and
+integration, Redfish against the vendored DMTF mockups, and IPMI against `ipmi_sim` from Ubuntu's `openipmi`
+package. Both hardware tiers pass `--require-target`, so a runner missing a container runtime or the simulator
+fails rather than skipping its way to a green run.
+
+Two legs, 3.12 and 3.13, because those are the two sides of the `crypt` fallback in `configmanager.py` and
+`selfservice.py`. Around two minutes each, of which the tests themselves are under thirty seconds; the rest is
+installing dependencies and pulling the 175MB replay image.
+
+That image is pinned by digest in `conftest.py`, and the job reads the digest back out of it rather than
+repeating it, so the two cannot drift and a green run last month used the same replay server as one today.
+
 ## Fixtures
 
 All in `conftest.py`, where each one's docstring carries the reasoning. This is the index: what it gives you, and
@@ -468,7 +480,7 @@ stronger still, and is worth considering whenever a CI test job is added.
 
 Relevant hazards: `asyncio.to_thread` needs 3.9+, module-level `asyncio.Lock()` in `configmanager.py` is
 warning-free only on 3.10+, and `crypt` left the stdlib in 3.13, on which see the dependency note under
-"Running".
+"Running". CI runs the suite on both 3.12 and 3.13 so that both sides of that fallback are exercised.
 
 A Python 3.9 test environment would need `pytest<9` and `pytest-asyncio<1.3`. That is the only reason those bounds
 exist, and why `requirements-test.txt` does not apply them to the default setup.
@@ -481,12 +493,12 @@ Decisions, not omissions:
   would hide exactly the isolation bugs this design is most exposed to, and a shared simulator outliving the worker
   that started it needs solving first. Revisit once the suite is demonstrably deterministic. See "Running in
   parallel" for what is already in place for it.
-- **No tox or nox.** Deferred to when a CI job is added. Note for that evaluation: a per-component split cannot
+- **No tox or nox.** Still deferred. Note for that evaluation: a per-component split cannot
   work, because `confluent_server/setup.py.tmpl` declares no dependency on the client (the
   `Requires: confluent_client` lives only in `confluent_server.spec.tmpl`), so a server-only environment cannot
   import `confluent.core`. Any environment must install both components together.
 - **No coverage threshold.** Establish a baseline first, gate later.
-- **No CI job yet.** `.github/workflows/ci.yml` runs ruff, shellcheck, compileall and pyrefly, and is untouched.
+- ~~**No CI job yet.**~~ `.github/workflows/ci.yml` gained a `Pytest` job. See "Continuous integration".
 - **No AST-based "contract" tests.** Asserting that source text contains an `await` duplicates what pyrefly's
   `unused-coroutine` and `not-async` checks already do properly, and breaks on any refactor.
 
