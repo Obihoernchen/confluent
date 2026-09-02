@@ -26,15 +26,6 @@ redfish:
   - name: dmtf-rackmount
     address: 127.0.0.1:8481
     mockup: public-rackmount1
-    known_failures:
-      # A confluent defect this bundle exposed on the first run. Health
-      # reporting indexes PCIeDevices without checking the service publishes
-      # it, so a KeyError escapes and the caller is told
-      # "Unexpected Error: 'PCIeDevices'". Recorded at both layers it shows
-      # up: the protocol read and the command a user actually runs. Remove
-      # both entries once a service without that collection is handled.
-      get_health: indexes PCIeDevices without checking it exists
-      nodehealth: indexes PCIeDevices without checking it exists
 
   - name: dmtf-liquid-cooled
     address: 127.0.0.1:8482
