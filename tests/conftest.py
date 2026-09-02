@@ -112,6 +112,12 @@ _UNSET = object()
 # it may carry beside defaults.
 _KINDS = sorted({kind for group in _TARGET_FIXTURES.values() for kind in group})
 
+# Which known_failures entry marked which test, and which of those entries
+# got as far as running. An entry whose tests all skip is inert, and says so
+# in the terminal summary rather than sitting there looking like coverage.
+_KNOWN_FAILURE_MARKS = {}
+_EXERCISED_FAILURES = set()
+
 # Kinds that actually got as far as running a test this session. --require-target
 # is checked against this rather than against the inventory, so that a device
 # named but never reached, because a simulator or a container runtime is
@@ -232,6 +238,20 @@ def pytest_runtest_call(item):
         _EXECUTED_KINDS.add(kind)
 
 
+def pytest_runtest_logreport(report):
+    """Note the known_failures entries that actually decided something.
+
+    Keyed on the xfail outcome rather than on the body running, because a test
+    whose fixture is what fails xfails during setup and never reaches the
+    body. The whole reversible tier is that shape: restored_bootdev reads the
+    override before the test starts.
+    """
+    marks = _KNOWN_FAILURE_MARKS.get(report.nodeid)
+    if marks and (hasattr(report, 'wasxfail')
+                  or 'XPASS(strict)' in str(report.longrepr)):
+        _EXERCISED_FAILURES.update(marks)
+
+
 def _unmet_requirements(config):
     return sorted({kind for kind in config.getoption('require_target')
                    if kind not in _EXECUTED_KINDS})
@@ -246,7 +266,36 @@ def pytest_sessionfinish(session, exitstatus):
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
+def _inert_known_failures(config):
+    """Entries whose tests all skipped, so the entry decided nothing.
+
+    An entry only shows up as xfail or xpass when its test reaches the body.
+    Where every match skips instead, for a safety ceiling or a device that
+    declined, the entry is invisible either way: it looks the same whether
+    the defect it names is still there or was fixed a year ago. Nine of the
+    nineteen retired on 2026-09-02 were this, and reading skip reasons by
+    hand was the only thing that found them.
+    """
+    if config.getoption('keyword'):
+        return []
+    marked = set()
+    for pairs in _KNOWN_FAILURE_MARKS.values():
+        marked |= pairs
+    return sorted('{0}, listed under {1}'.format(pattern, name)
+                  for name, pattern in marked - _EXERCISED_FAILURES)
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    inert = _inert_known_failures(config)
+    if inert:
+        terminalreporter.write_sep(
+            '=', 'known_failures that decided nothing', yellow=True)
+        terminalreporter.write_line(
+            'Every test these matched skipped, so they would look the same if '
+            'the defect were already fixed:')
+        for entry in inert:
+            terminalreporter.write_line('  {0}'.format(entry))
+
     unmet = _unmet_requirements(config)
     if unmet:
         terminalreporter.write_sep(
@@ -400,10 +449,17 @@ def _mark_known_failures(items):
     """
     matched = set()
     for item, device, name in _device_items(items):
+        # A simulator and a replayed capture answer the same way every time,
+        # so an unexpected pass there means the entry is wrong and should say
+        # so. Real hardware gets the lenient marker, where one flaky read
+        # would otherwise turn a run red.
+        strict = bool(device.get('simulator') or device.get('mockup'))
         for pattern, reason in (device.get('known_failures') or {}).items():
             if pattern in item.nodeid:
                 matched.add((name, pattern))
-                item.add_marker(pytest.mark.xfail(reason=reason, strict=False))
+                _KNOWN_FAILURE_MARKS.setdefault(item.nodeid, set()).add(
+                    (name, pattern))
+                item.add_marker(pytest.mark.xfail(reason=reason, strict=strict))
     return matched
 
 

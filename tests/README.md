@@ -362,6 +362,13 @@ one thing, and a confluent defect the replay exposed is another that should be f
 An entry whose key matches nothing collected is refused at collection. These match on a substring of the nodeid,
 so renaming a test is enough to leave a record that reads as a watched defect while nothing watches it.
 
+Two more things keep the list honest, because a stale entry is the normal end state and half of them are silent.
+Against a simulator or a replayed capture the marker is strict, so an entry whose defect has been fixed fails the
+run rather than reporting an unexpected pass nobody reads; real hardware stays lenient, where one flaky read
+should not turn a run red. And an entry whose tests all skipped is named in the terminal summary, because it
+decided nothing and looks identical whether the defect is still there or was fixed a year ago. Of nineteen
+entries retired on 2026-09-02, nine were unexpected passes and ten were that second, quieter kind.
+
 ### Running in parallel
 
 Not yet, deliberately. `pytest-xdist` is not a dependency and no `--dist` option is set, because an option in
