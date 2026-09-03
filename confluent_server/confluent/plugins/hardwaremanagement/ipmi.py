@@ -21,7 +21,6 @@ import confluent.interface.console as conapi
 import confluent.messages as msg
 import confluent.util as util
 import copy
-import errno
 from fnmatch import fnmatch
 import io
 import os
@@ -176,14 +175,13 @@ class IpmiCommandWrapper(ipmicommand.Command):
                       'hardwaremanagement.manager'), self._attribschanged)
         self.setup_confluent_keyhandler()
         try:
-            os.makedirs('/var/cache/confluent/ipmi/')
-        except OSError as e:
-            if e.errno != errno.EEXIST or not os.path.isdir(
-                    '/var/cache/confluent/ipmi/'):
-                raise
-        try:
+            os.makedirs('/var/cache/confluent/ipmi/', exist_ok=True)
             self.set_sdr_cachedir('/var/cache/confluent/ipmi/')
         except Exception:
+            # Saving the sdr cache was already best effort; making the
+            # directory to hold it was not, so a confluent that cannot write
+            # /var/cache failed the request outright rather than going
+            # without. The cache only saves rereading a bmc's sdr.
             pass
         return self
 
