@@ -129,18 +129,18 @@ jobs:
   pytest:
     name: Pytest
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # 3.12 still has crypt in the standard library and 3.13 does not, so
-        # the two legs take the two sides of the guarded import in
-        # configmanager.py and selfservice.py. Nothing else differs.
-        python-version: ['3.12', '3.13']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          # One version for now. This used to be a matrix of 3.12 and 3.13,
+          # which are the two sides of the guarded crypt import in
+          # configmanager.py and selfservice.py: 3.12 still has the module in
+          # the standard library and 3.13 does not. Nothing else about the
+          # suite differs between them, so the second leg bought one import
+          # path for twice the runtime. Adding 3.13 back is putting the matrix
+          # here again, and the install step below already handles either.
+          python-version: '3.12'
           cache: pip
       - name: Install what the suite imports
         # Measured into an empty virtualenv rather than copied from the

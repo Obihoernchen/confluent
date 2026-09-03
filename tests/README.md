@@ -406,9 +406,10 @@ package. Both hardware tiers pass `--require-target`, so a runner missing a cont
 fails rather than skipping its way to a green run, and `--hw-level=reversible`, without which every write test
 skips and the job proves reads only.
 
-Two legs, 3.12 and 3.13, because those are the two sides of the `crypt` fallback in `configmanager.py` and
-`selfservice.py`. Around two minutes each, of which the tests themselves are under thirty seconds; the rest is
-installing dependencies and pulling the 175MB replay image.
+One leg, 3.12. It was a matrix with 3.13 beside it, those being the two sides of the `crypt` fallback in
+`configmanager.py` and `selfservice.py`, and the second leg bought that one import path for twice the runtime.
+Around two minutes, of which the tests themselves are under thirty seconds; the rest is installing dependencies
+and pulling the 175MB replay image.
 
 That image is pinned by digest in `conftest.py`, and the job reads the digest back out of it rather than
 repeating it, so the two cannot drift and a green run last month used the same replay server as one today.
