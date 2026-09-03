@@ -21,13 +21,15 @@ The suite is fast enough to run on every change. Coverage starts low, which is e
 seed tests, not a coverage push. Record a baseline with the command above and work upward from it rather than
 picking a target percentage.
 
-Install the tooling with `pip install -r requirements-test.txt`. A full run additionally needs confluent's own
-runtime dependencies importable. Measured into an empty virtualenv rather than copied from the packaging, this is
-the set that gets collection to succeed:
+Two files at the repository root, and a run needs both:
 
 ```sh
-pip install aiohttp asyncssh cryptography libarchive-c lxml msgpack psutil pyparsing pysnmp python-dateutil pyyaml
+pip install -r requirements-test.txt -r requirements-runtime.txt
 ```
+
+`requirements-test.txt` is the tooling. `requirements-runtime.txt` is confluent's own dependencies, as far as the
+suite needs them importable, measured into an empty virtualenv rather than copied from the packaging. The list
+itself lives there rather than here, so that CI can key its pip cache on the file.
 
 `webauthn` is not among them, and `psutil` is not optional the way the others are: `confluent/util.py` falls
 back to `netifaces` when it is missing, so you need one of the two. `EfiCompressor`, `libvirt` and
@@ -400,16 +402,26 @@ deployment would blow straight through.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` carries a `Pytest` job running the three tiers that need no hardware: unit and
-integration, Redfish against the vendored DMTF mockups, and IPMI against `ipmi_sim` from Ubuntu's `openipmi`
-package. Both hardware tiers pass `--require-target`, so a runner missing a container runtime or the simulator
-fails rather than skipping its way to a green run, and `--hw-level=reversible`, without which every write test
-skips and the job proves reads only.
+`.github/workflows/ci.yml` runs the three tiers that need no hardware, one job each: unit and integration,
+Redfish against the vendored DMTF mockups, and IPMI against `ipmi_sim` from Ubuntu's `openipmi` package. Both
+device jobs pass `--require-target`, so a runner missing a container runtime or the simulator fails rather than
+skipping its way to a green run, and `--hw-level=reversible`, without which every write test skips and the job
+proves reads only.
 
-One leg, 3.12. It was a matrix with 3.13 beside it, those being the two sides of the `crypt` fallback in
-`configmanager.py` and `selfservice.py`, and the second leg bought that one import path for twice the runtime.
-Around two minutes, of which the tests themselves are under thirty seconds; the rest is installing dependencies
-and pulling the 175MB replay image.
+Three jobs rather than three steps, because the image pull and the apt install then happen at the same time
+instead of one after the other. Steps within a job are strictly sequential, and those two share nothing beyond
+the python environment. What they do share is in `.github/actions/pytest-env`, so the version and the install
+have one home rather than three.
+
+One python version, 3.12. It was a matrix with 3.13 beside it, those being the two sides of the `crypt` fallback
+in `configmanager.py` and `selfservice.py`, and the second leg bought that one import path for twice the runtime.
+The tests themselves are under thirty seconds; the rest is installing dependencies and pulling the 175MB replay
+image.
+
+The pip cache names its key files explicitly. The default globs `**/requirements.txt`, which here matched
+`confluent_server/` and `confluent_client/`, neither of which the jobs install from, and missed both files they
+do. Anything the jobs install has to be in a file the key covers, which is why `requirements-runtime.txt` exists
+rather than a list written into the workflow.
 
 That image is pinned by digest in `conftest.py`, and the job reads the digest back out of it rather than
 repeating it, so the two cannot drift and a green run last month used the same replay server as one today.

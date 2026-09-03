@@ -1,0 +1,35 @@
+name: Test suite environment
+description: >
+  Python plus everything the suite imports. Used by the three jobs that run
+  pytest, which is why it is an action rather than steps repeated in each:
+  the install belongs in one place, and so does the version.
+
+  Assumes the repository is already checked out, since a local action cannot
+  be resolved before that.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        # One version for now. This used to be a matrix of 3.12 and 3.13,
+        # which are the two sides of the guarded crypt import in
+        # configmanager.py and selfservice.py: 3.12 still has the module in
+        # the standard library and 3.13 does not. Nothing else about the
+        # suite differs between them, so the second leg bought one import
+        # path for twice the runtime. Adding 3.13 back means a matrix in each
+        # job that uses this; the install below already handles either.
+        python-version: '3.12'
+        cache: pip
+        # Named rather than left to the default, which globs **/requirements.txt
+        # and so matched confluent_server/ and confluent_client/, neither of
+        # which this installs, while missing both files that it does. The key
+        # was hashing the wrong inputs in both directions.
+        cache-dependency-path: |
+          requirements-test.txt
+          requirements-runtime.txt
+    - shell: bash
+      run: |
+        pip install -r requirements-test.txt -r requirements-runtime.txt
+        python -c 'import crypt' 2>/dev/null \
+          || pip install legacycrypt

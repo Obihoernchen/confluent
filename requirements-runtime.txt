@@ -1,0 +1,22 @@
+# What confluent itself imports, as far as the test suite needs it to import.
+#
+# Measured into an empty virtualenv rather than copied from the packaging,
+# which lists more than is needed and less than is required. This is the set
+# that gets collection to succeed; tests/README.md carries the reasoning and
+# the notes on which of these are genuinely optional.
+#
+# In its own file rather than inline in .github/workflows/ci.yml so that the
+# pip cache key covers it. A list written in the workflow is in no key at all,
+# so editing it would leave the cache holding the set from before the edit.
+
+aiohttp
+asyncssh
+cryptography
+libarchive-c
+lxml
+msgpack
+psutil
+pyparsing
+pysnmp
+python-dateutil
+pyyaml
