@@ -707,8 +707,17 @@ def get_myname():
             return mycachedname[0]
     except IOError:
         myname = socket.gethostname().split('.')[0]
-        with open('/etc/confluent/cfg/myname', 'w') as f:
-            f.write(myname)
+        try:
+            with open('/etc/confluent/cfg/myname', 'w') as f:
+                f.write(myname)
+        except IOError:
+            # The file only caches the hostname, and the handler for not
+            # being able to read it cannot assume it will be able to write
+            # it: the directory is absent until confluent is installed, and
+            # is root's when it is there. check_quorum calls this on every
+            # node request, so raising here turned a missing cache file into
+            # a failure of the request.
+            pass
         mycachedname[0] = myname
         mycachedname[1] = time.time()
         return myname
