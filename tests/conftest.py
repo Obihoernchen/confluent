@@ -139,9 +139,6 @@ _IPMI_PORT = 623
 # writes its configuration and says what it is and is not evidence of.
 _SIMULATOR = 'ipmi_sim'
 
-# What it prints once the channel is bound. Waiting for this rather than
-# sleeping is the difference between a tier that is slow and one that is flaky.
-_SIMULATOR_READY = 'Opened UDP port'
 
 # The Redfish counterpart of the simulator: a captured service replayed by
 # DMTF's mockup server. An inventory entry opts in with mockup: <name>, and the
@@ -909,7 +906,7 @@ def ipmi_simulator(tmp_path_factory):
         running = _Drained(simulator, _SIMULATOR)
         started.append(running)
         ours.add((host, port))
-        _wait_for_simulator(running, port)
+        _wait_for_simulator(running, host, port)
 
     yield ensure
 
@@ -1166,10 +1163,22 @@ def redfish_mockups(tmp_path_factory):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _wait_for_simulator(running, port):
-    """Block until the simulator says it has the channel, or explain why not."""
+def _wait_for_simulator(running, host, port):
+    """Block until the simulator holds its port, or explain why not.
+
+    On the port rather than on anything the process says, because what it says
+    is not the same everywhere. OpenIPMI 2.0.36 announces "Opened UDP port" on
+    startup; 2.0.33, which is what Ubuntu ships and therefore what CI runs,
+    prints nothing at all from start to exit while binding and answering
+    perfectly. Waiting for the line meant a working simulator timed out on the
+    one distribution this has to work on.
+
+    Holding the port is what the tests actually need, and every build does it.
+    The output is still worth reporting on failure, for the builds that have
+    some.
+    """
     deadline = time.monotonic() + 30
-    while not running.saw(_SIMULATOR_READY):
+    while not _port_is_taken(host, port):
         if running.process.poll() is not None:
             pytest.fail('{0} exited during startup:\n{1}'.format(
                 _SIMULATOR, running.output()))
