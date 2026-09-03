@@ -39,8 +39,16 @@ ipmi:
       # it. Both the read and the reversible writes built on it are affected.
       test_boot_device_is_reported: ipmi_sim has no chassis boot options
       test_ipmi_bootdev: ipmi_sim has no chassis boot options
-      # nodeinventory asks for the inventory map first, which needs the SDR,
-      # and the simulator's does not satisfy the read confluent makes of it:
-      # "Requested sensor, data, or record not present", a non-zero exit and
-      # no inventory. The FRU behind it reads fine.
+      # The FRU read is refused for asking too many bytes at once, which is
+      # fair, but with completion code 200, request data field length
+      # exceeded. That one is about the request, and a Read FRU Data request
+      # is a fixed four bytes; 202, cannot return the number of requested
+      # data bytes, is the code for this, and confluent already backs off and
+      # retries smaller on that one and on 201. So this is ipmi_sim answering
+      # out of spec rather than anything confluent gets wrong, and it is not
+      # worth teaching the retry an extra code for.
+      test_system_identity_is_reported: ipmi_sim answers 200 to a FRU read
+      # A different gap, and the one nodeinventory hits first: it asks for the
+      # inventory map, which needs the SDR, and the simulator's does not
+      # satisfy the read confluent makes of it.
       test_inventory_reports_hardware_detail: ipmi_sim's SDR is not readable
