@@ -243,6 +243,10 @@ the BMC through argument parsing, the socket protocol, a confluent service, reso
 management plugin and the protocol library, so everything below is exercised as a side effect of asserting on what
 the user is shown. That is the layer where a good answer turns into "Unexpected Error", and no lower test sees it.
 
+`test_cli_bootdev.py` and `test_cli_bmcpassword.py` do the same for a write, which is a distinct path rather than
+the same one with an argument: the tools send an update instead of a fetch. `test_ipmi_bootdev.py` and
+`test_redfish_bootdev.py` set the same override one layer down, and being library calls they reach none of it.
+
 The `confluent_service` fixture starts a service on a temp socket with the inventory as its nodes, and `run_cli`
 invokes the tools from the source tree against it. Two things make this cheap:
 
@@ -315,6 +319,9 @@ integration included. There is one committed inventory per transport:
 CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml python3 -m pytest -m hardware --run-hardware
 CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml   python3 -m pytest -m hardware --run-hardware
 ```
+
+Add `--hw-level=reversible` to either to include the write tests, which the default ceiling skips. Nothing
+described by these two inventories is a machine, so there is nothing for a write to disturb.
 
 Each command above is the whole setup: the fixtures start what a device stands in for and stop it afterwards.
 The IPMI one needs `ipmi_sim`, from OpenIPMI's lanserv tools (`OpenIPMI-lanserv` on Fedora and EL). The Redfish
@@ -396,7 +403,8 @@ deployment would blow straight through.
 `.github/workflows/ci.yml` carries a `Pytest` job running the three tiers that need no hardware: unit and
 integration, Redfish against the vendored DMTF mockups, and IPMI against `ipmi_sim` from Ubuntu's `openipmi`
 package. Both hardware tiers pass `--require-target`, so a runner missing a container runtime or the simulator
-fails rather than skipping its way to a green run.
+fails rather than skipping its way to a green run, and `--hw-level=reversible`, without which every write test
+skips and the job proves reads only.
 
 Two legs, 3.12 and 3.13, because those are the two sides of the `crypt` fallback in `configmanager.py` and
 `selfservice.py`. Around two minutes each, of which the tests themselves are under thirty seconds; the rest is

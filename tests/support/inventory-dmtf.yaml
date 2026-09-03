@@ -14,13 +14,26 @@
 # code path. Vendor handlers need a capture of a real machine, which is not
 # something to publish.
 #
-# Reads only. A replayed service holds writes in memory but has no state
-# machine behind an action, so nothing above readonly is enabled here.
+# Writes go as far as a property and no further. The mockup server keeps a
+# PATCH in memory and answers later reads from it, which is enough for a
+# reversible test to set a value, see it, and put it back. An action is not
+# the same thing: a POST to ComputerSystem.Reset is accepted and changes
+# nothing, so a test driving one would pass here without having proved
+# anything. Nothing above reversible is enabled for that reason, and a
+# reversible test that reaches for an action rather than a property does not
+# belong on these entries.
+#
+# One property is already known not to survive the trip, and it is a quirk of
+# the captures rather than of the server: both describe a system whose
+# IndicatorLED is Off while its chassis reports LocationIndicatorActive true.
+# Confluent reads the chassis and writes the system, on purpose and for
+# reasons documented at set_identify, so nodeidentify never reads back what it
+# wrote here. No real machine contradicts itself that way.
 
 defaults:
   user: admin
   password: unused
-  allow: readonly
+  allow: reversible
 
 redfish:
   - name: dmtf-rackmount

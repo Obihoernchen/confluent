@@ -158,6 +158,11 @@ jobs:
         # Pulled here rather than by the fixture, because the first pull is
         # 175MB and can outlast the per-test timeout in addopts. The digest
         # lives in conftest.py so the two cannot drift apart.
+        #
+        # --hw-level=reversible on both device steps, without which every
+        # write test skips and the tier proves reads only. It is the run's
+        # ceiling, and the devices keep their own: nothing either inventory
+        # names is a machine, so there is nothing here for a write to disturb.
         run: |
           image=$(python - <<'PY'
           import re
@@ -168,7 +173,8 @@ jobs:
           )
           docker pull "$image"
           CONFLUENT_TEST_HARDWARE=tests/support/inventory-dmtf.yaml \
-            python -m pytest -q -m hardware --run-hardware --require-target=redfish
+            python -m pytest -q -m hardware --run-hardware \
+              --hw-level=reversible --require-target=redfish
       - name: IPMI, against ipmi_sim
         # --require-target so a runner without the simulator fails rather than
         # skipping its way to a green run that tested nothing.
@@ -176,4 +182,5 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openipmi
           CONFLUENT_TEST_HARDWARE=tests/support/inventory-ipmisim.yaml \
-            python -m pytest -q -m hardware --run-hardware --require-target=ipmi
+            python -m pytest -q -m hardware --run-hardware \
+              --hw-level=reversible --require-target=ipmi
