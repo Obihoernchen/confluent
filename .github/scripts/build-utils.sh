@@ -20,14 +20,14 @@ case "$VERSION_ID" in
     yum -y install gcc make binutils libcurl-devel fuse-devel
     ;;
 8*)
-    dnf -y install dnf-plugins-core
+    dnf -y --setopt=install_weak_deps=False install dnf-plugins-core
     dnf config-manager --set-enabled powertools
-    dnf -y install gcc make binutils libcurl-devel fuse-devel libxcrypt-devel
+    dnf -y --setopt=install_weak_deps=False install gcc make binutils libcurl-devel fuse-devel libxcrypt-devel
     ;;
 *)
-    dnf -y install dnf-plugins-core
+    dnf -y --setopt=install_weak_deps=False install dnf-plugins-core
     dnf config-manager --set-enabled crb
-    dnf -y install gcc make binutils libcurl-devel fuse-devel libxcrypt-devel
+    dnf -y --setopt=install_weak_deps=False install gcc make binutils libcurl-devel fuse-devel libxcrypt-devel
     ;;
 esac
 

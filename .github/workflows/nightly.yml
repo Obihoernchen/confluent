@@ -141,9 +141,9 @@ jobs:
         # mkversion has no history to describe
         run: |
           if command -v zypper > /dev/null; then
-              zypper -n install git-core tar gzip
+              zypper -n install --no-recommends git-core tar gzip
           else
-              dnf -y install git-core
+              dnf -y --setopt=install_weak_deps=False install git-core
           fi
       - uses: actions/checkout@v7
         with:
@@ -167,7 +167,7 @@ jobs:
         arch: [x86_64, aarch64]
     steps:
       - name: Install build dependencies
-        run: dnf -y install rpm-build git-core tar xz cpio
+        run: dnf -y --setopt=install_weak_deps=False install rpm-build git-core tar xz cpio
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -197,7 +197,7 @@ jobs:
     container: almalinux:9
     steps:
       - name: Install build dependencies
-        run: dnf -y install rpm-build tar gzip
+        run: dnf -y --setopt=install_weak_deps=False install rpm-build tar gzip
       - uses: actions/checkout@v7
       - name: Build ipxe rpm
         run: bash .github/scripts/build-ipxe.sh
@@ -222,7 +222,7 @@ jobs:
           - { arch: aarch64, runner: ubuntu-26.04-arm }
     steps:
       - name: Install build dependencies
-        run: dnf -y install rpm-build git-core golang tar
+        run: dnf -y --setopt=install_weak_deps=False install rpm-build git-core golang tar
       - uses: actions/checkout@v7
       - name: Build rpms
         run: |
@@ -250,16 +250,19 @@ jobs:
           - { arch: arm64, rpmarch: aarch64, runner: ubuntu-26.04-arm }
     steps:
       - name: Install git
-        run: apt-get update && apt-get -y install git
+        run: apt-get update && apt-get -y --no-install-recommends install git
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # noarch, so converted in the amd64 leg only, like the noarch rpms
       - uses: actions/download-artifact@v8
+        if: matrix.arch == 'amd64'
         with:
           pattern: rpms-osdeploy-*
           path: alien
           merge-multiple: true
       - uses: actions/download-artifact@v8
+        if: matrix.arch == 'amd64'
         with:
           name: rpms-ipxe
           path: alien
@@ -268,7 +271,7 @@ jobs:
           name: rpms-go-${{ matrix.rpmarch }}
           path: alien
       - name: Build debs
-        run: bash .github/scripts/build-debs.sh debout alien
+        run: bash .github/scripts/build-debs.sh ${{ matrix.arch == 'arm64' && '--arch-only' || '' }} debout alien
       - uses: actions/upload-artifact@v7
         with:
           name: debs-${{ matrix.release }}-${{ matrix.arch }}
@@ -283,7 +286,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get -y install createrepo-c dpkg-dev
+        run: sudo apt-get update && sudo apt-get -y --no-install-recommends install createrepo-c dpkg-dev
       - uses: actions/download-artifact@v8
         with:
           path: art
@@ -302,9 +305,19 @@ jobs:
                   bash .github/scripts/mkbundle.sh "$dist-$arch" "$VERSION" bundles "${files[@]}"
               done
           done
+          # Architecture: all debs come from the amd64 leg only
+          pickdeb() {  # <dir> <all|arch>
+              for f in "$1"/*.deb; do
+                  [ "$(dpkg-deb -f "$f" Architecture)" = "$2" ] && echo "$f"
+              done
+              return 0
+          }
           for release in noble resolute; do
               for arch in amd64 arm64; do
-                  bash .github/scripts/mkbundle.sh "$release-$arch" "$VERSION" bundles art/debs-$release-$arch/*.deb
+                  mapfile -t files < <(
+                      pickdeb "art/debs-$release-amd64" all
+                      pickdeb "art/debs-$release-$arch" "$arch")
+                  bash .github/scripts/mkbundle.sh "$release-$arch" "$VERSION" bundles "${files[@]}"
               done
           done
       - name: Write run summary
@@ -352,9 +365,9 @@ jobs:
       - name: Install tar
         run: |
           if command -v zypper > /dev/null; then
-              zypper -n install tar gzip
+              zypper -n install --no-recommends tar gzip
           elif command -v dnf > /dev/null; then
-              dnf -y install tar gzip
+              dnf -y --setopt=install_weak_deps=False install tar gzip
           fi
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
