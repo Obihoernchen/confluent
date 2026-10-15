@@ -1,6 +1,13 @@
 # Confluent
 
-![Python 3](https://img.shields.io/badge/python-3-blue.svg) [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/xcat2/confluent/blob/master/LICENSE)
+[![CI](https://github.com/Obihoernchen/confluent/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Obihoernchen/confluent/actions/workflows/ci.yml?query=branch%3Amaster)
+[![Nightly](https://github.com/Obihoernchen/confluent/actions/workflows/nightly.yml/badge.svg?branch=master)](https://github.com/Obihoernchen/confluent/actions/workflows/nightly.yml?query=branch%3Amaster)
+[![Release](https://img.shields.io/github/v/release/Obihoernchen/confluent?sort=semver)](https://github.com/Obihoernchen/confluent/releases/latest)
+[![Nightly build](https://img.shields.io/github/v/release/Obihoernchen/confluent?include_prereleases&sort=date&filter=*nightly*&display_name=release&label=&color=orange)](https://github.com/Obihoernchen/confluent/releases/tag/nightly)
+[![Commits since release](https://img.shields.io/github/commits-since/Obihoernchen/confluent/latest?sort=semver)](https://github.com/Obihoernchen/confluent/commits/master)
+[![Docs](https://img.shields.io/badge/docs-confluent--docs-blue)](https://xcat2.github.io/confluent-docs/)
+![Python 3](https://img.shields.io/badge/python-3-blue.svg)
+[![License](https://img.shields.io/github/license/Obihoernchen/confluent)](LICENSE)
 
 Confluent is a software package to handle essential bootstrap and operation of scale-out server configurations.
 It supports stateful and stateless deployments for various operating systems.
