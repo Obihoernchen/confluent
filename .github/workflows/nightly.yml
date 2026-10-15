@@ -75,7 +75,8 @@ jobs:
           browserfs=$(git ls-remote "$BROWSERFS_REPO" HEAD | cut -f1)
           vinz=$(git ls-remote "$VINZ_REPO" HEAD | cut -f1)
           key="confluent@$GITHUB_SHA browserfs@$browserfs vinz@$vinz"
-          last=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null |
+          # no release yet on the first run, and bash runs with pipefail here
+          last=$({ gh release view nightly --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null || true; } |
               sed -n 's/^<!-- build: \(.*\) -->$/\1/p')
           build=true
           if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$FORCE" != true ] && [ "$key" = "$last" ]; then
