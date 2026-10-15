@@ -250,7 +250,8 @@ jobs:
           - { arch: arm64, rpmarch: aarch64, runner: ubuntu-26.04-arm }
     steps:
       - name: Install git
-        run: apt-get update && apt-get -y --no-install-recommends install git
+        # ca-certificates is only a Recommends of git, and checkout clones over https
+        run: apt-get update && apt-get -y --no-install-recommends install git ca-certificates
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
