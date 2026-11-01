@@ -205,6 +205,19 @@ def fixup(rootdir, vols):
         with open(loadent, 'w') as loadentout:
             for cfgline in currentry:
                 cfgparts = cfgline.split()
+                if cfgparts and cfgparts[0] in ('linux', 'initrd'):
+                    # paths are relative to the boot filesystem of the target,
+                    # not of the system that built the image
+                    newcfgparts = [cfgparts[0]]
+                    for cfgpart in cfgparts[1:]:
+                        if cfgpart.startswith('/'):
+                            if '/boot/' in cfgpart:
+                                cfgpart = cfgpart[cfgpart.index('/boot/') + 5:]
+                            if '/boot' not in devbymount:
+                                cfgpart = '/boot' + cfgpart
+                        newcfgparts.append(cfgpart)
+                    loadentout.write(' '.join(newcfgparts) + '\n')
+                    continue
                 if not cfgparts or cfgparts[0] != 'options':
                     loadentout.write(cfgline + '\n')
                     continue
