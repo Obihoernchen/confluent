@@ -13,7 +13,8 @@ fi
 set_selinux_context system_u:object_r:bin_t:s0 /opt/confluent/bin/urlmount
 if [ "untethered" = "$imagemethod" -o "uncompressed" = "$imagemethod" ]; then
     mount -t tmpfs untethered /mnt/remoteimg
-    while ! curl -f https://$confluent_whost/confluent-public/os/$confluent_profile/rootimg.sfs -o /mnt/remoteimg/rootimg.sfs; do
+    # Fall back to the other managers when the deployment server fails
+    while ! for url in https://$confluent_whost/confluent-public/os/$confluent_profile/rootimg.sfs $confluent_urls; do curl -f --connect-timeout 10 --speed-limit 1 --speed-time 30 $url -o /mnt/remoteimg/rootimg.sfs && break; done; do
         echo "Failed downloading image, retrying..."
 	sleep $((RANDOM%3)).$((RANDOM))
     done
