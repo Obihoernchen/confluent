@@ -763,10 +763,64 @@ async def resourcehandler_backend(req, make_response):
             nodename = request[2]
         bootfile = request[3]
         cfg = configmanager.ConfigManager(None)
-        nodec = cfg.get_node_attributes(nodename, 'deployment.pendingprofile')
+        nodec = cfg.get_node_attributes(nodename, ('deployment.pendingprofile', 'deployment.kernelargs'))
         pprofile = nodec.get(nodename, {}).get('deployment.pendingprofile', {}).get('value', None)
         if not pprofile:
             return await make_response(mimetype, 404, 'Not Found')
+        kernelargs = nodec.get(nodename, {}).get('deployment.kernelargs', {}).get('value', None)
+        if kernelargs and bootfile in ('ipxe', 'ipxe.shim'):
+            # Serve the profile script with the node kernelargs appended,
+            # making paths absolute as it is no longer fetched from the profile
+            bootscript = []
+            with open('/var/lib/confluent/public/os/{0}/boot.{1}'.format(pprofile, bootfile)) as ipxein:
+                for line in ipxein.read().split('\n'):
+                    cmd = line.split(' ', 2)
+                    if len(cmd) > 1 and cmd[0] in ('imgfetch', 'shim', 'chain'):
+                        cmd[1] = '/confluent-public/os/{0}/{1}'.format(pprofile, cmd[1])
+                        if cmd[1].endswith('/boot/kernel'):
+                            cmd.append(kernelargs)
+                        line = ' '.join(cmd)
+                    bootscript.append(line)
+            return await make_response('text/plain', 200, 'OK', body='\n'.join(bootscript))
+        if bootfile == 'boot.img':
+            # UEFI HTTP boot does not follow redirects, so serve the profile
+            # image here, writing the node kernelargs over the room left for
+            # them on the linux line of its grub.cfg
+            profdir = '/var/lib/confluent/public/os/{0}'.format(pprofile)
+            grubcfg = b''
+            for root, _, files in os.walk(profdir + '/boot'):
+                if 'grub.cfg' in files:
+                    with open(os.path.join(root, 'grub.cfg'), 'rb') as grubin:
+                        grubcfg = grubin.read()
+                    break
+            nodeargs = ' {0}'.format(kernelargs).encode('utf8')
+            padidx = grubcfg.find(b' ' * 2048 + b'\n')
+            if not kernelargs:
+                grubcfg = b''
+            elif padidx < 0 or len(nodeargs) > 2048:
+                log.log({'error': 'Unable to apply deployment.kernelargs of {0} to profile {1}, the arguments must be shorter than 2048 characters and the profile needs "osdeploy updateboot"'.format(nodename, pprofile)})
+                grubcfg = b''
+            patched = grubcfg[:padidx] + nodeargs.ljust(2048) + grubcfg[padidx + 2048:]
+            imgname = profdir + '/boot.img'
+            rsp = await make_response(
+                'application/vnd.efi-img', 200, 'OK',
+                headers={'Content-Length': str(os.path.getsize(imgname))})
+            if req.method == 'HEAD':
+                return rsp
+            # hold back enough to match a grub.cfg split across chunks
+            keep = max(len(grubcfg) - 1, 0)
+            carry = b''
+            with open(imgname, 'rb') as imgin:
+                while True:
+                    chunk = imgin.read(1048576)
+                    buf = carry + chunk
+                    if grubcfg:
+                        buf = buf.replace(grubcfg, patched)
+                    split = len(buf) if not chunk else max(len(buf) - keep, 0)
+                    await rsp.write(buf[:split])
+                    carry = buf[split:]
+                    if not chunk:
+                        return rsp
         redir = '/confluent-public/os/{0}/boot.{1}'.format(pprofile, bootfile)
         rsp = await make_response(mimetype, 302, 'Found', {'Location': redir})
         return rsp

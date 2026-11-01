@@ -351,10 +351,13 @@ async def proxydhcp(handler, nodeguess):
                     log.log({'info': 'No pending profile for {0}, skipping proxyDHCP reply'.format(node)})
                     continue
                 myip = socket.inet_ntoa(myipn)
+                bootbase = 'http://{0}/confluent-public/os/{1}/boot.'.format(myip, profile)
+                if cfd.get(node, {}).get('deployment.kernelargs', {}).get('value', None):
+                    bootbase = 'http://{0}/confluent-api/boot/by-node/{1}/'.format(myip, node)
                 if disco['arch'] == 'bios-x86' or not os.path.exists('/var/lib/confluent/public/os/{0}/boot.ipxe.shim'.format(profile)):
-                    bootfile = 'http://{0}/confluent-public/os/{1}/boot.ipxe'.format(myip, profile).encode('utf8')
+                    bootfile = (bootbase + 'ipxe').encode('utf8')
                 else:
-                    bootfile = 'http://{0}/confluent-public/os/{1}/boot.ipxe.shim'.format(myip, profile).encode('utf8')
+                    bootfile = (bootbase + 'ipxe.shim').encode('utf8')
             elif disco['arch'] == 'uefi-x64':
                 bootfile = b'confluent/x86_64/ipxe-shim.efi'
             elif disco['arch'] == 'bios-x86':
@@ -643,9 +646,10 @@ async def reply_dhcp6(node, addr, cfg, packet, cfd, profile, sock, niccfg=None):
     if not insecuremode:
         insecuremode = 'never'
     proto = 'https' if insecuremode == 'never' else 'http'
-    bootfile = '{0}://[{1}]/confluent-public/os/{2}/boot.img'.format(
-        proto, ipv6srvaddr, profile
-    )
+    bootpath = '/confluent-public/os/{0}/boot.img'.format(profile)
+    if cfd.get(node, {}).get('deployment.kernelargs', {}).get('value', None):
+        bootpath = '/confluent-api/boot/by-node/{0}/boot.img'.format(node)
+    bootfile = '{0}://[{1}]{2}'.format(proto, ipv6srvaddr, bootpath)
     if not isinstance(bootfile, bytes):
         bootfile = bootfile.encode('utf8')
     ipass = []
@@ -796,10 +800,10 @@ async def reply_dhcp4(node, info, packet, cfg, reqview, httpboot, cfd, profile, 
     can302 = True
     if isboot and httpboot:
         proto = 'https' if insecuremode == 'never' else 'http'
-        bootfile = '{0}://{1}/confluent-public/os/{2}/boot.img'.format(
-            proto, myipn, profile
-        )
         bootshorturl = '/confluent-public/os/{0}/boot.img'.format(profile)
+        if cfd.get(node, {}).get('deployment.kernelargs', {}).get('value', None):
+            bootshorturl = '/confluent-api/boot/by-node/{0}/boot.img'.format(node)
+        bootfile = '{0}://{1}{2}'.format(proto, myipn, bootshorturl)
         bootfilename = '/var/lib/confluent/public/os/{0}/boot.img'.format(profile)
         can302 = False
         if not isinstance(bootfile, bytes):
@@ -822,10 +826,13 @@ async def reply_dhcp4(node, info, packet, cfg, reqview, httpboot, cfd, profile, 
             if not profile:
                 log.log({'info': 'No pending profile for {0}, skipping proxyDHCP reply'.format(node)})
                 return
+            bootbase = 'http://{0}/confluent-public/os/{1}/boot.'.format(myipn, profile)
+            if cfd.get(node, {}).get('deployment.kernelargs', {}).get('value', None):
+                bootbase = 'http://{0}/confluent-api/boot/by-node/{1}/'.format(myipn, node)
             if not os.path.exists('/var/lib/confluent/public/os/{0}/boot.ipxe.shim'.format(profile)):
-                bootfile = 'http://{0}/confluent-public/os/{1}/boot.ipxe'.format(myipn, profile).encode('utf8')
+                bootfile = (bootbase + 'ipxe').encode('utf8')
             else:
-                bootfile = 'http://{0}/confluent-public/os/{1}/boot.ipxe.shim'.format(myipn, profile).encode('utf8')
+                bootfile = (bootbase + 'ipxe.shim').encode('utf8')
             if len(bootfile) > 127:
                 if bootfile.startswith(b'http'):
                     bootfile = register_shorturl(bootfile.decode('utf8')).encode('utf8')

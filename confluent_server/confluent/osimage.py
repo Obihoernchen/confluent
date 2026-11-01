@@ -214,7 +214,9 @@ async def update_boot_linux(profiledir, profile, label):
     initrdcmd = 'initrdefi' if needefi else 'initrd'
     grubcfg = "set timeout=0\nmenuentry '"
     grubcfg += label
-    grubcfg += "' {\n    " + lincmd + " /kernel " + kernelargs + "\n"
+    # The trailing spaces leave room for deployment.kernelargs, which the
+    # by-node boot.img url writes over them without changing the image layout
+    grubcfg += "' {\n    " + lincmd + " /kernel " + kernelargs + " " * 2048 + "\n"
     initrds = []
     for initramfs in glob.glob(profiledir + '/boot/initramfs/*.cpio'):
         initramfs = os.path.basename(initramfs)
