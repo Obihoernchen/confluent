@@ -3,6 +3,7 @@
 ## SYNOPSIS
 
 `imgutil` `build` [<options>] <scratchdir>  
+`imgutil` `containerimport` [<options>] <image> <scratchdir>  
 `imgutil` `exec` [<options>] <scratchdir> [<cmd>...]  
 `imgutil` `unpack` <profilename> <scratchdir>  
 `imgutil` `pack` [<options>] <scratchdir> <profilename>  
@@ -16,6 +17,23 @@
 
 * `build`:
   Build a new diskless image from scratch in the specified scratch directory.
+
+* `containerimport`:
+  An alternative to `build` for images made elsewhere, for example in CI.
+  Import a container image or SIF file into the specified scratch
+  directory and complete it like `build` would: add the confluent
+  initramfs configuration, install the default package list and
+  regenerate the initramfs. Missing packages are installed from the
+  repositories of the image, so an image that already has every package
+  imports without network access. A package list entry with a version,
+  such as `curl=8.5.0-2ubuntu10`, always runs the package manager and
+  needs the repositories. Units that container images mask are
+  unmasked and `/usr/sbin/policy-rc.d` is removed, so the image boots like
+  an installed system. Package manager settings of the image are kept,
+  for example container base images leaving out documentation. EL9,
+  Ubuntu 24.04 and SUSE 16 or later are supported.
+  With `--selinux`, the full SELinux context of every file, including the
+  SELinux user, is set from the policy of the image.
 
 * `exec`:
   Start the specified scratch directory as a container and optionally run a command inside it.
@@ -70,6 +88,33 @@
 
 * <scratchdir>:
   Directory to build new diskless root in.
+
+## CONTAINERIMPORT OPTIONS
+
+* `-p`, `--packagelist` <file>:
+  Filename of package list to replace default pkglist.
+
+* `-a`, `--addpackagelist` <file>:
+  A list of additional packages to include. May be specified multiple times.
+
+* `-y`, `--non-interactive`:
+  Avoid prompting for confirmation.
+
+* `--selinux`:
+  As for `build`.
+
+* <image>:
+  Container image to import, in any form podman accepts: a registry
+  reference such as `docker://docker.io/library/almalinux:9`, the name of
+  a local image, or an archive such as `oci-archive:/path/to/image.tar`.
+  A newer image in the registry is pulled first. Local images are looked
+  up in the podman storage of the user running imgutil, normally root.
+  A SIF file, as built by Apptainer or SingularityCE, is extracted from
+  its squashfs partition instead, which needs squashfs-tools 4.4 or newer
+  but not podman.
+
+* <scratchdir>:
+  Directory to import the image to. It must be empty or not exist.
 
 ## EXEC OPTIONS
 
@@ -126,6 +171,20 @@ detected from the source tree):
 Build an aarch64 Ubuntu diskless image on an amd64 Ubuntu host:
 
     imgutil build --arch aarch64 /tmp/myimage
+
+Import an image built from a Dockerfile and pack it:
+
+    podman build -t localhost/myimage .
+    imgutil containerimport localhost/myimage /tmp/myimage
+    imgutil pack /tmp/myimage myprofile
+
+Import an image that CI pushed to a registry:
+
+    imgutil containerimport docker://registry.example.com/hpc/compute:latest /tmp/myimage
+
+Import an Apptainer image:
+
+    imgutil containerimport /var/tmp/compute.sif /tmp/myimage
 
 Execute a shell in an unpacked image:
 
