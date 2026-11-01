@@ -797,7 +797,8 @@ class DebHandler(OsHandler):
         if rc:
             sys.stderr.write('{0} failed with exit code {1}\n'.format(
                 ' '.join(cmd), rc))
-            raise SystemExit(rc)
+            # not SystemExit, run_constrained would turn it into success
+            raise Exception('apt failed in image')
 
     def prep_root(self, args):
         mkdirp(os.path.join(self.targpath, 'etc/apt'))
