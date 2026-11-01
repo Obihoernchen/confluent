@@ -924,6 +924,10 @@ class ElHandler(OsHandler):
             subprocess.check_call(['yum'] + self.yumargs)
         else:
             subprocess.check_call(['yum', '-y'] + self.yumargs)
+        # boot entries written in the chroot carry the kernel command line of
+        # the build system, and installing to disk writes its own entries
+        for loadent in glob.glob(os.path.join(self.targpath, 'boot/loader/entries/*.conf')):
+            os.remove(loadent)
         if self.selinux:
             # keep SELinux enabled, build_root labels the tree afterwards
             seconfigpath = os.path.join(self.targpath, 'etc/selinux/config')
