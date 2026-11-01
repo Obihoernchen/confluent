@@ -4,6 +4,7 @@
 
 `imgutil` `build` [<options>] <scratchdir>  
 `imgutil` `containerimport` [<options>] <image> <scratchdir>  
+`imgutil` `containerfile` [<options>] <ostype>  
 `imgutil` `exec` [<options>] <scratchdir> [<cmd>...]  
 `imgutil` `unpack` <profilename> <scratchdir>  
 `imgutil` `pack` [<options>] <scratchdir> <profilename>  
@@ -34,6 +35,12 @@
   Ubuntu 24.04 and SUSE 16 or later are supported.
   With `--selinux`, the full SELinux context of every file, including the
   SELinux user, is set from the policy of the image.
+
+* `containerfile`:
+  Print a Containerfile, or with `--apptainer` an Apptainer definition
+  file, that installs every package `containerimport` checks for. It is generated
+  from the same package lists, so an image built from it imports without
+  network access. Add site specific content and build it in CI.
 
 * `exec`:
   Start the specified scratch directory as a container and optionally run a command inside it.
@@ -116,6 +123,30 @@
 * <scratchdir>:
   Directory to import the image to. It must be empty or not exist.
 
+## CONTAINERFILE OPTIONS
+
+* `-p`, `--packagelist` <file>, `-a`, `--addpackagelist` <file>, `--selinux`:
+  As for `containerimport`. Pass the same options to `containerimport`
+  later, the generated file shows the matching `containerimport` command.
+
+* `--arch` <architecture>:
+  Target architecture, for example `aarch64`. Defaults to the architecture
+  of the system running imgutil. The generated file and its build command
+  name the matching platform, so the image can be built on another
+  architecture with emulation.
+
+* `--from` <image>:
+  Base image to use instead of the default for the OS type (AlmaLinux for
+  EL, the official Ubuntu image, openSUSE Leap for SUSE).
+
+* `--apptainer`:
+  Print an Apptainer definition file for building a SIF instead of a
+  Containerfile.
+
+* <ostype>:
+  `el`, `ubuntu` or `suse` followed by the version, EL9, Ubuntu 24.04 and
+  SUSE 16 or later, for example `el10`, `ubuntu24.04` or `suse16`.
+
 ## EXEC OPTIONS
 
 * `-v`, `--volume` <mount>:
@@ -185,6 +216,19 @@ Import an image that CI pushed to a registry:
 Import an Apptainer image:
 
     imgutil containerimport /var/tmp/compute.sif /tmp/myimage
+
+Prepare an EL10 image in CI that imports without network access:
+
+    imgutil containerfile el10 > Containerfile
+    podman build -t localhost/compute .
+    podman save --format oci-archive -o compute.tar localhost/compute
+    imgutil containerimport oci-archive:compute.tar /tmp/compute
+
+The same as a SIF:
+
+    imgutil containerfile --apptainer el10 > compute.def
+    apptainer build compute.sif compute.def
+    imgutil containerimport compute.sif /tmp/compute
 
 Execute a shell in an unpacked image:
 

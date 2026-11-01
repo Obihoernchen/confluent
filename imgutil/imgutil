@@ -1326,6 +1326,18 @@ def main():
                          'docker://docker.io/library/almalinux:9, a local image name or oci-archive:image.tar, '
                          'or a SIF file')
     importp.add_argument('scratchdir', help='Directory to import the image to')
+    containerp = sps.add_parser('containerfile', help='Print a Containerfile for an image that containerimport can import without repositories')
+    containerp.add_argument('-p', '--packagelist', help='Filename of package list to replace default pkglist', default='')
+    containerp.add_argument('-a', '--addpackagelist', action='append', default=[],
+                            help='A list of additional packages to include, may be specified multiple times')
+    containerp.add_argument('--arch', default=None, help='Target architecture (e.g. aarch64), defaults to the architecture of this system')
+    containerp.add_argument('--selinux', action='store_true',
+                            help='Include the packages containerimport --selinux needs')
+    containerp.add_argument('--from', dest='base', default=None,
+                            help='Base image to use instead of the default for the OS type')
+    containerp.add_argument('--apptainer', action='store_true',
+                            help='Print an Apptainer definition file for building a SIF instead')
+    containerp.add_argument('ostype', help='OS type, for example el10, ubuntu24.04 or suse16')
     execp = sps.add_parser('exec', help='Start specified scratch directory as container')
     execp.add_argument('-v', '--volume',
         help='Directory to make available in the build environment.  -v / will '
@@ -1354,6 +1366,8 @@ def main():
         build_root(args)
     elif args.subcommand == 'containerimport':
         import_root(args)
+    elif args.subcommand == 'containerfile':
+        print_containerfile(args)
     elif args.subcommand == 'capture':
         capture_remote(args)
     elif args.subcommand == 'unpack':
@@ -1941,6 +1955,85 @@ def _import_root(args):
     oshandler.imported = True
     build_root(args, oshandler)
 
+
+def print_containerfile(args):
+    # A starting point for a CI built image that has every package import
+    # checks for, generated from the same package list
+    ostype = args.ostype
+    arch = uname_arch_map.get(args.arch, args.arch) if args.arch else os.uname().machine
+    if arch not in elf_arch_map.values():
+        sys.stderr.write('Unsupported architecture {0}, use one of {1}\n'.format(
+            arch, ', '.join(elf_arch_map.values())))
+        sys.exit(1)
+    if not container_supported(ostype):
+        sys.stderr.write('Unsupported OS type {0}, for example el10, ubuntu24.04 '
+                         'or suse16 are supported\n'.format(ostype))
+        sys.exit(1)
+    if ostype.startswith('el'):
+        oshandler = ElHandler('el', ostype[2:], arch, args, None)
+        baseimage = 'docker.io/library/almalinux:{0}'.format(ostype[2:])
+        # container bases ship coreutils-single, a build gets full coreutils
+        install = ['dnf -y upgrade', 'dnf -y install --allowerasing coreutils {0}', 'dnf clean all']
+        example = 'dnf -y install munge slurm-slurmd'
+    elif ostype.startswith('ubuntu'):
+        oshandler = DebHandler('ubuntu', ostype[6:], arch, args, None, '/')
+        baseimage = 'docker.io/library/ubuntu:{0}'.format(ostype[6:])
+        install = ['apt-get update', 'DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade',
+                   'DEBIAN_FRONTEND=noninteractive apt-get -y install {0}', 'apt-get clean',
+                   'rm -rf /var/lib/apt/lists/*']
+        example = 'apt-get update && apt-get -y install munge slurmd'
+    else:
+        oshandler = SuseHandler('opensuse_leap', ostype[4:], arch, args)
+        # Leap tags name the minor version, suse16 means 16.0
+        baseimage = 'registry.opensuse.org/opensuse/leap:{0}'.format(
+            ostype[4:] if '.' in ostype else ostype[4:] + '.0')
+        install = ['zypper -n update', 'zypper -n install {0}', 'zypper clean -a']
+        example = 'zypper -n install munge slurm-node'
+    if args.selinux and not oshandler.selinuxsupport:
+        sys.stderr.write('--selinux is not supported for {0} images\n'.format(oshandler.oscategory))
+        sys.exit(1)
+    if not os.path.exists(oshandler.pkglist):
+        sys.stderr.write('No package list found for {0}\n'.format(ostype))
+        sys.exit(1)
+    oshandler.add_pkglists()
+    pkgs = list(dict.fromkeys(oshandler.packages()))
+    pkglines = [' '.join(pkgs[idx:idx + 8]) for idx in range(0, len(pkgs), 8)]
+    pkgtext = '\\\n        ' + ' \\\n        '.join(pkglines)
+    importopts = ''
+    if args.selinux:
+        importopts += ' --selinux'
+    if args.packagelist:
+        importopts += ' -p {0}'.format(args.packagelist)
+    for plist in args.addpackagelist:
+        importopts += ' -a {0}'.format(plist)
+    platform = 'linux/' + deb_arch_map[arch]
+    print('# Generated by imgutil containerfile for {0} {1}'.format(ostype, arch))
+    print('# It installs every package imgutil containerimport checks for, so the import')
+    print('# does not run the package manager and needs no repositories.')
+    if args.apptainer:
+        print('Bootstrap: docker')
+        print('From: {0}'.format(args.base or baseimage))
+        print('')
+        print('%post')
+        for cmd in install:
+            print('    ' + cmd.format(pkgtext))
+        print('    # Site specific content goes here, for example:')
+        print('    # {0}'.format(example))
+        print('')
+        print('# Build and import:')
+        print('#   apptainer build --arch {0} myimage.sif myimage.def'.format(platform.split('/')[-1]))
+        print('#   imgutil containerimport{0} myimage.sif /var/lib/confluent/scratch/myimage'.format(importopts))
+        return
+    print('FROM --platform={0} {1}'.format(platform, args.base or baseimage))
+    print('RUN ' + ' && \\\n    '.join(install).format(pkgtext))
+    print('')
+    print('# Site specific content goes here, for example:')
+    print('# RUN {0}'.format(example))
+    print('')
+    print('# Build, export and import:')
+    print('#   podman build --platform {0} -t localhost/myimage .'.format(platform))
+    print('#   podman save --format oci-archive -o myimage.tar localhost/myimage')
+    print('#   imgutil containerimport{0} oci-archive:myimage.tar /var/lib/confluent/scratch/myimage'.format(importopts))
 
 def prep_decrypt(indir):
     indir = os.path.abspath(indir)
