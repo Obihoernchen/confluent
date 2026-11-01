@@ -1499,8 +1499,18 @@ def fingerprint_host_el(args, hostpath='/'):
     release = ''
     if hostpath[0] != '/':
          hostpath = os.path.join(os.getcwd(), hostpath)
+    # EL9 and older keep the rpm database in /var/lib/rpm, EL10 moved it to
+    # /usr/lib/sysimage/rpm and links the old path there. The default of the
+    # host only finds the database of an image of the same generation.
+    dbpath = os.path.join(hostpath, 'var/lib/rpm')
+    if os.path.isdir(dbpath) and not os.path.islink(dbpath):
+        dbpath = '/var/lib/rpm'
+    else:
+        dbpath = None
     try:
         import rpm
+        if dbpath:
+            rpm.addMacro('_dbpath', dbpath)
         ts = rpm.TransactionSet(hostpath)
         rpms = ts.dbMatch('provides', 'system-release')
         for inf in rpms:
@@ -1509,9 +1519,14 @@ def fingerprint_host_el(args, hostpath='/'):
             osname = inf.name
             version = inf.version
             release = inf.release
+        if dbpath:
+            rpm.delMacro('_dbpath')
     except ImportError:
         try:
-            rver = subprocess.check_output('rpm --root {0} -q --whatprovides system-release'.format(hostpath).split())
+            rpmcmd = ['rpm', '--root', hostpath]
+            if dbpath:
+                rpmcmd.extend(['--dbpath', dbpath])
+            rver = subprocess.check_output(rpmcmd + ['-q', '--whatprovides', 'system-release'])
             if not isinstance(rver, str):
                 rver = rver.decode('utf8')
             for infline in subprocess.check_output('rpm -qi {0}'.format(rver).split()).decode('utf8').split('\n'):
