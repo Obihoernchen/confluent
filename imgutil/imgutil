@@ -1529,7 +1529,7 @@ def fingerprint_host_el(args, hostpath='/'):
             rver = subprocess.check_output(rpmcmd + ['-q', '--whatprovides', 'system-release'])
             if not isinstance(rver, str):
                 rver = rver.decode('utf8')
-            for infline in subprocess.check_output('rpm -qi {0}'.format(rver).split()).decode('utf8').split('\n'):
+            for infline in subprocess.check_output(rpmcmd + ['-qi', rver.strip()]).decode('utf8').split('\n'):
                 if ':' not in infline:
                     continue
                 k, v = infline.split(':', 1)
