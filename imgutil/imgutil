@@ -1511,16 +1511,18 @@ def fingerprint_host_el(args, hostpath='/'):
         import rpm
         if dbpath:
             rpm.addMacro('_dbpath', dbpath)
-        ts = rpm.TransactionSet(hostpath)
-        rpms = ts.dbMatch('provides', 'system-release')
-        for inf in rpms:
-            if 'el8' not in inf.release and 'el7' not in inf.release and 'el9' not in inf.release and 'el10' not in inf.release:
-                continue
-            osname = inf.name
-            version = inf.version
-            release = inf.release
-        if dbpath:
-            rpm.delMacro('_dbpath')
+        try:
+            ts = rpm.TransactionSet(hostpath)
+            rpms = ts.dbMatch('provides', 'system-release')
+            for inf in rpms:
+                if 'el8' not in inf.release and 'el7' not in inf.release and 'el9' not in inf.release and 'el10' not in inf.release:
+                    continue
+                osname = inf.name
+                version = inf.version
+                release = inf.release
+        finally:
+            if dbpath:
+                rpm.delMacro('_dbpath')
     except ImportError:
         try:
             rpmcmd = ['rpm', '--root', hostpath]
