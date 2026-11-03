@@ -195,6 +195,19 @@ def had_swap():
                 return True
     return False
 
+def get_squashfs_device(mountpoint):
+    # the device of a squashfs mounted whole at mountpoint, unsquashfs reads it
+    # directly
+    with open('/proc/self/mountinfo') as mountinfo:
+        for line in mountinfo:
+            fields, _, fsinfo = line.partition(' - ')
+            fields = fields.split()
+            fsinfo = fsinfo.split()
+            if (len(fields) > 4 and len(fsinfo) > 1 and fields[4] == mountpoint
+                    and fields[3] == '/' and fsinfo[0] == 'squashfs'):
+                return fsinfo[1]
+    return None
+
 def install_to_disk(imgpath):
     lvmvols = {}
     deftotsize = 0
@@ -332,7 +345,17 @@ def install_to_disk(imgpath):
             blankfsstat = os.statvfs('/run/imginst/targ')
             blankused = (blankfsstat.f_blocks - blankfsstat.f_bfree) * blankfsstat.f_bsize
             sys.stdout.write('\nWriting {0}: '.format(vol['mount']))
-            with subprocess.Popen(['cp', '-ax', source + '/.', '/run/imginst/targ']) as copier:
+            srcdev = get_squashfs_device(source)
+            # vfat cannot take the xattrs unsquashfs writes, and the ESP is small
+            if srcdev and vol['filesystem'] != 'vfat' and shutil.which('unsquashfs'):
+                # unlike cp, unsquashfs decompresses in parallel and reads the
+                # image in order, as the untethered boot does
+                copycmd = ['sh', '-c', 'unsquashfs -no-progress -force -dest "$2" "$1" > /dev/null || '
+                           '{ echo "unsquashfs failed, copying with cp"; cp -ax "$3/." "$2"; }',
+                           'sh', srcdev, '/run/imginst/targ', source]
+            else:
+                copycmd = ['cp', '-ax', source + '/.', '/run/imginst/targ']
+            with subprocess.Popen(copycmd) as copier:
                 stillrunning = copier.poll()
                 lastprogress = 0.0
                 while stillrunning is None:
