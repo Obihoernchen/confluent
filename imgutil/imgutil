@@ -696,6 +696,7 @@ class SuseHandler(OsHandler):
         shutil.copytree(dracutdir, targdir)
         with open(os.path.join(self.targpath, 'etc/dracut.conf.d/diskless.conf'), 'w') as dracutconf:
             dracutconf.write('compress=xz\nhostonly=no\ndracutmodules+=" diskless base terminfo "\n')
+        set_dracut_buildconf(self.targpath)
         cmd = ['chmod', 'a+x']
         cmd.extend(glob.glob(os.path.join(targdir, '*')))
         subprocess.check_call(cmd)
@@ -933,6 +934,7 @@ class ElHandler(OsHandler):
         shutil.copytree(dracutdir, targdir)
         with open(os.path.join(self.targpath, 'etc/dracut.conf.d/diskless.conf'), 'w') as dracutconf:
             dracutconf.write('compress=xz\nhostonly=no\ndracutmodules+=" diskless base terminfo "\n')
+        set_dracut_buildconf(self.targpath)
         cmd = ['chmod', 'a+x']
         cmd.extend(glob.glob(os.path.join(targdir, '*')))
         subprocess.check_call(cmd)
@@ -1247,17 +1249,44 @@ def main():
         parser.print_usage()
         sys.exit(1)
     if args.subcommand == 'build':
-        build_root(args)
+        try:
+            build_root(args)
+        finally:
+            clear_dracut_buildconf(args.scratchdir)
     elif args.subcommand == 'capture':
         capture_remote(args)
     elif args.subcommand == 'unpack':
         unpack_image(args)
     elif args.subcommand == 'exec':
-        exec_root(args)
+        set_dracut_buildconf(args.scratchdir)
+        try:
+            exec_root(args)
+        finally:
+            clear_dracut_buildconf(args.scratchdir)
     elif args.subcommand == 'pack':
         pack_image(args)
     else:
         parser.print_usage()
+
+
+# The image root has no /dev/log, so dracut would log at debug level to the
+# kmsg of the build host instead, and list each initramfs it builds for that.
+# Only set while imgutil runs in the image, the deployed image keeps the
+# logging of the distribution.
+dracut_buildconf = 'etc/dracut.conf.d/99-imgutil-build.conf'
+
+
+def set_dracut_buildconf(installroot):
+    if os.path.isdir(os.path.join(installroot, 'etc/dracut.conf.d')):
+        with open(os.path.join(installroot, dracut_buildconf), 'w') as confout:
+            confout.write('sysloglvl=0\n')
+
+
+def clear_dracut_buildconf(installroot):
+    try:
+        os.remove(os.path.join(installroot, dracut_buildconf))
+    except FileNotFoundError:
+        pass
 
 
 def exec_root(args):
