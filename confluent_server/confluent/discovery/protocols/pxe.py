@@ -908,7 +908,11 @@ async def reply_dhcp4(node, info, packet, cfg, reqview, httpboot, cfd, profile, 
     datasum = ~datasum & 0xffff
     repview[26:28] = struct.pack('!H', datasum)
     if clipn:
-        staticassigns[fulladdr] = (clipn, repview[:replen + 28].tobytes(), node, cfg)
+        # keep one reply per relay, giaddr, option 82 and gateway differ between them
+        prev = staticassigns.get(fulladdr, (None, {}))
+        replies = prev[1] if prev[0] == clipn else {}
+        replies[relayip] = repview[:replen + 28].tobytes()
+        staticassigns[fulladdr] = (clipn, replies, node, cfg)
     elif fulladdr in staticassigns:
         del staticassigns[fulladdr]
     if httpboot:
@@ -974,7 +978,7 @@ def send_raw_packet(repview, replen, reqview, info):
 async def ack_request_full(pkt, rq, info, sock, requestor, hwaddr, addr):
     if hwaddr not in staticassigns:  # no static assignment for mac, ignore
         return
-    clientipn, origreply, node, cfg = staticassigns[hwaddr]
+    clientipn, _, node, cfg = staticassigns[hwaddr]
     if addr:
         return # TODO(jjohnson2): Handle IPv6 requests
         #niccfg = await netutil.get_nic_config(cfg, node, ifidx=addr[-1], onlyfamily=socket.AF_INET6)
@@ -1001,18 +1005,22 @@ async def ack_request(pkt, rq, info, sock=None, requestor=None, addr=None):
         return
     if pkt.get(50, None) != assigninfo[0]:
         return
-    rply = assigninfo[1]
+    replies = assigninfo[1]
+    # fall back to an offer made through another path if none went out through this one
+    rply = replies.get(relayip, None) or next(iter(replies.values()))
     reply = bytearray(512)
     repview = memoryview(reply)
     repview[:len(rply)] = rply
     repview[270:271] = b'\x05'
+    repview[32:36] = rq[4:8].tobytes()  # answer with the xid of this request
+    repview[52:56] = relayip
     repview[26:28] = struct.pack('!H', 0) # TODO: use datasum, it was incorrect)
     datasum = _ipsum(b'\x00\x11' + repview[24:26].tobytes() +
                      repview[12:len(rply)].tobytes())
     datasum = ~datasum & 0xffff
     repview[26:28] = struct.pack('!H', datasum)
     if relayip != b'\x00\x00\x00\x00':
-        sock.sendto(repview[28:], requestor)
+        sock.sendto(repview[28:len(rply)], requestor)
     else:
         send_raw_packet(repview, len(rply), rq, info)
 
