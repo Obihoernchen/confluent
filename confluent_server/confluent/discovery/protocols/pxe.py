@@ -197,6 +197,10 @@ def v6opts_to_dict(rq):
         duid = reqdict[1]
         if struct.unpack('!H', duid[:2])[0] == 4:
             disco['uuid'] = decode_uuid(duid[2:])
+            # RFC 6355 specifies network byte order for DUID-UUID, which
+            # iPXE follows, while some firmware sends the mixed-endian
+            # SMBIOS/EFI layout. Keep the other form for matching.
+            disco['altuuid'] = str(uuid.UUID(bytes=bytes(duid[2:18])))
     if 61 in reqdict:
         disco['arch'] = pxearchs.get(bytes(reqdict[61]), None)
     return reqdict, disco
@@ -475,6 +479,8 @@ async def process_dhcp6req(handler, rqv, addr, net, cfg, nodeguess):
     if disco['uuid'] == '03000200-0400-0500-0006-000700080009':
         # Ignore common malformed dhcpv6 request from firmware
         return
+    if disco['uuid'] not in uuidmap and disco.get('altuuid', None) in uuidmap:
+        disco['uuid'] = disco['altuuid']
     mac = await neighutil.get_hwaddr(ip.split('%', 1)[0])
     if not mac:
         net.sendto(b'\x00', addr)
