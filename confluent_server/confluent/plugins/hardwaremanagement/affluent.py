@@ -34,7 +34,14 @@ class WebClient(object):
         self.node = node
         self.wc = webclient.WebConnection(node, port=443, verifycallback=util.TLSCertVerifier(
             configmanager, node, 'pubkeys.tls_hardwaremanager').verify_cert)
-        self.wc.set_basic_credentials(creds[node]['secret.hardwaremanagementuser']['value'], creds[node]['secret.hardwaremanagementpassword']['value'])
+        nodecreds = creds.get(node, {})
+        user = nodecreds.get('secret.hardwaremanagementuser', {}).get('value')
+        passwd = nodecreds.get('secret.hardwaremanagementpassword', {}).get('value')
+        if not (user and passwd):
+            raise exc.TargetEndpointBadCredentials(
+                'secret.hardwaremanagementuser and '
+                'secret.hardwaremanagementpassword must be set')
+        self.wc.set_basic_credentials(user, passwd)
     
     async def fetch(self, url, results):
         try:
@@ -124,8 +131,18 @@ def _run_method(method, workers, results, configmanager, nodes, element):
         creds = configmanager.get_node_attributes(
                 nodes, ['secret.hardwaremanagementuser', 'secret.hardwaremanagementpassword'], decrypt=True)
         for node in nodes:
-            workers.add(tasks.spawn_task(method(configmanager, creds,
-                                       node, results, element)))
+            workers.add(tasks.spawn_task(_per_node(method, configmanager, creds,
+                                                   node, results, element)))
+
+
+async def _per_node(method, configmanager, creds, node, results, element):
+    # Nothing retrieves a worker's exception, so report the failure for
+    # that node rather than leaving the node without any result
+    try:
+        await method(configmanager, creds, node, results, element)
+    except exc.TargetEndpointBadCredentials as e:
+        results.put_nowait(msg.ConfluentTargetInvalidCredentials(
+            node, exc.exc_text(e)))
 
 async def retrieve(nodes, element, configmanager, inputdata):
     results = asyncio.Queue()
