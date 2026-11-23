@@ -386,6 +386,18 @@ class ConsoleHandler(object):
                 self._console = cns
         except (exc.NotImplementedException, exc.NotFoundException):
             self._console = None
+        except exc.ConfluentException as e:
+            # an expected failure, such as an unresolvable BMC name, is shown
+            # in the console below and does not need a trace
+            strerror = exc.exc_text(e)
+            if (e.apierrorcode == 500 and
+                    not isinstance(e, exc.LockedCredentials)):
+                if _tracelog:
+                    _tracelog.log(traceback.format_exc(),
+                                  ltype=log.DataTypes.event,
+                                  event=log.Events.stacktrace)
+                else:
+                    print(traceback.format_exc())
         except Exception as e:
             strerror = str(e)
             if _tracelog:
