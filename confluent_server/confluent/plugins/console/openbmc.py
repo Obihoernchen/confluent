@@ -162,25 +162,37 @@ class OpenBmcConsole(conapi.Console):
         return
 
     async def write(self, data):
+        ws = self.ws
+        if not self.connected or ws is None:
+            # the session already ended and reported its disconnect, input
+            # that was still on its way has nowhere to go
+            return
         try:
-            await self.ws.send_str(data.decode())
+            await ws.send_str(data.decode())
         except Exception:
+            callback = self.datacallback
+            if not self.connected or callback is None:
+                # closed while this write was in flight
+                return
             _trace('Console websocket write for {0} failed:\n{1}'.format(
                 self.node, traceback.format_exc()))
-            await self.datacallback(conapi.ConsoleEvent.Disconnect)
+            self.connected = False
+            await callback(conapi.ConsoleEvent.Disconnect)
 
     async def close(self):
-        if self.recvr:
-            self.recvr.cancel()
-            self.recvr = None
-        if self.ws:
-            await self.ws.close()
-            self.ws = None
-        if self.clisess:
-            await self.clisess.close()
-            self.clisess = None
+        # mark the session finished before awaiting anything, so a write
+        # arriving meanwhile sees it closed rather than a half torn down one
         self.connected = False
         self.datacallback = None
+        recvr, self.recvr = self.recvr, None
+        ws, self.ws = self.ws, None
+        clisess, self.clisess = self.clisess, None
+        if recvr:
+            recvr.cancel()
+        if ws:
+            await ws.close()
+        if clisess:
+            await clisess.close()
 
 async def create(nodes, element, configmanager, inputdata):
     if len(nodes) == 1:
