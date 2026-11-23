@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import aiohttp
 import asyncio
+import confluent.exceptions as exc
 import confluent.util as util
 import confluent.messages as msg
 import aiohmi.util.webclient as wc
@@ -25,6 +27,27 @@ def simplify_name(name):
 
 
 pdupool = tasks.TaskPool(128)
+
+# What a PDU that is down or unreachable raises: most connection failures
+# from aiohttp are OSErrors, a dropped connection is only a
+# ClientConnectionError, and a timeout is not an OSError before python 3.11
+_unreachable = (OSError, asyncio.TimeoutError, aiohttp.ClientConnectionError)
+
+
+def _unreachable_msg(node, err):
+    # aiohttp's connection errors carry the TLS context in their text, the
+    # underlying socket error is the part worth showing
+    err = getattr(err, 'os_error', err)
+    return msg.ConfluentTargetTimeout(node, exc.exc_text(err))
+
+
+async def _per_node(node, func, *args):
+    # Report an unreachable PDU against that PDU, rather than failing the
+    # whole request and leaving the other PDUs' results unretrieved
+    try:
+        return await func(*args)
+    except _unreachable as e:
+        return _unreachable_msg(node, e)
 
 
 def data_by_type(indata):
@@ -320,12 +343,15 @@ async def retrieve(nodes, element, configmanager, inputdata):
     if 'outlets' in element:
         if element[-1] == 'outlets':
             for node in nodes:
-                async for res in list_outlets(node, configmanager):
-                    yield res
+                try:
+                    async for res in list_outlets(node, configmanager):
+                        yield res
+                except _unreachable as e:
+                    yield _unreachable_msg(node, e)
             return
         gp = tasks.TaskPile(pdupool)
         for node in nodes:
-            gp.spawn(get_outlet, element, node, configmanager)
+            gp.spawn(_per_node, node, get_outlet, element, node, configmanager)
         async for res in gp:
             yield res
 
@@ -333,20 +359,20 @@ async def retrieve(nodes, element, configmanager, inputdata):
     elif element[0] == 'sensors':
         gp = tasks.TaskPile(pdupool)
         for node in nodes:
-            gp.spawn(read_sensors, element, node, configmanager)
+            gp.spawn(_per_node, node, read_sensors, element, node, configmanager)
         async for rsp in gp:
             yield rsp
         return
     elif '/'.join(element).startswith('inventory/firmware/all'):
         gp = tasks.TaskPile(pdupool)
         for node in nodes:
-            gp.spawn(read_firmware, node, configmanager)
+            gp.spawn(_per_node, node, read_firmware, node, configmanager)
         async for rsp in gp:
             yield rsp
     elif '/'.join(element).startswith('inventory/hardware/all'):
         gp = tasks.TaskPile(pdupool)
         for node in nodes:
-            gp.spawn(read_inventory, element, node, configmanager)
+            gp.spawn(_per_node, node, read_inventory, element, node, configmanager)
         async for rsp in gp:
             yield rsp
     else:
@@ -360,10 +386,18 @@ async def update(nodes, element, configmanager, inputdata):
         for node in nodes:
             yield msg.ConfluentResourceUnavailable(node, 'Not implemented')
         return
+    reachable = []
     for node in nodes:
         gc = GeistClient(node, configmanager)
         newstate = inputdata.powerstate(node)
-        await gc.set_outlet(element[-1], newstate)
+        try:
+            await gc.set_outlet(element[-1], newstate)
+        except _unreachable as e:
+            yield _unreachable_msg(node, e)
+            continue
+        reachable.append(node)
+    if not reachable:
+        return
     await asyncio.sleep(1)
-    async for res in retrieve(nodes, element, configmanager, inputdata):
+    async for res in retrieve(reachable, element, configmanager, inputdata):
         yield res
