@@ -90,10 +90,18 @@ if [ "$imagemethod" != uncompressed ]; then
     echo $memtot > /sys/block/zram0/disksize
     modprobe xfs
     mkfs.xfs /dev/zram0 > /dev/null
+    zramopts="-o discard"
+    # zram never completes a discard that does not cover a whole page (fixed upstream in
+    # kernel commit e3668b371329). With pages larger than the 4k zram blocks, like on
+    # 64k page arm64 kernels, XFS online discard then hangs, so do without it there.
+    if [ "$(cat /sys/block/zram0/queue/physical_block_size)" != "$(cat /sys/block/zram0/queue/logical_block_size)" ]; then
+        echo "zram pages are larger than its blocks, mounting without online discard"
+        zramopts=""
+    fi
     if [ "$TETHERED" = 1 ]; then
-         mount -o discard /dev/zram0 /mnt/overlay
+         mount $zramopts /dev/zram0 /mnt/overlay
     else
-         mount -o discard /dev/zram0 /sysroot
+         mount $zramopts /dev/zram0 /sysroot
     fi
 elif [ "$imagemethod" = uncompressed ]; then
     mount -t tmpfs disklessroot /sysroot

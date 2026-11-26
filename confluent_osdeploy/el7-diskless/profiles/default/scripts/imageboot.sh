@@ -47,7 +47,15 @@ memtot=$(grep ^MemTotal: /proc/meminfo|awk '{print $2}')
 memtot=$((memtot/2))$(grep ^MemTotal: /proc/meminfo | awk '{print $3'})
 echo $memtot > /sys/block/zram0/disksize
 mkfs.xfs /dev/zram0 > /dev/null
-mount -o discard /dev/zram0 /mnt/overlay
+zramopts="-o discard"
+# zram never completes a discard that does not cover a whole page (fixed upstream in
+# kernel commit e3668b371329). With pages larger than the 4k zram blocks, like on
+# 64k page arm64 kernels, XFS online discard then hangs, so do without it there.
+if [ "$(cat /sys/block/zram0/queue/physical_block_size)" != "$(cat /sys/block/zram0/queue/logical_block_size)" ]; then
+    echo "zram pages are larger than its blocks, mounting without online discard"
+    zramopts=""
+fi
+mount $zramopts /dev/zram0 /mnt/overlay
 if [ ! -f /tmp/mountparts.sh ]; then
     mkdir -p /mnt/overlay/upper /mnt/overlay/work
     mount -t overlay -o upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work,lowerdir=/mnt/remote disklessroot /sysroot
